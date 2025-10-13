@@ -1,0 +1,261 @@
+[gd_scene load_steps=7 format=3 uid="uid://c6ldbbvlp8lwu"]
+
+[ext_resource type="Script" uid="uid://c2i32tfx0axnh" path="res://scripts/game_manager.gd" id="1_0wfyh"]
+[ext_resource type="Script" uid="uid://bromfrvr2m74y" path="res://scripts/database_manager.gd" id="2_sugp2"]
+[ext_resource type="Script" uid="uid://rta40fnn24gg" path="res://scripts/ui_new_game.gd" id="3_tbgi4"]
+[ext_resource type="Script" uid="uid://cvkss0t12l4ym" path="res://scripts/ui_system_list.gd" id="4_tefeu"]
+[ext_resource type="Script" uid="uid://4jxjepjmjrd" path="res://scripts/ui_market.gd" id="5_o6xl0"]
+[ext_resource type="Script" uid="uid://bwv723m0jsjeo" path="res://scripts/ui_cargo.gd" id="6_tefeu"]
+
+[node name="Main" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="GameManager" type="Node" parent="."]
+script = ExtResource("1_0wfyh")
+
+[node name="DatabaseManager" type="Node" parent="GameManager"]
+script = ExtResource("2_sugp2")
+
+[node name="NewGamePanel" type="Panel" parent="."]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -250.0
+offset_top = -200.0
+offset_right = 250.0
+offset_bottom = 200.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("3_tbgi4")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="NewGamePanel"]
+layout_mode = 1
+anchors_preset = -1
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = 20.0
+offset_right = -20.0
+offset_bottom = -20.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Title" type="Label" parent="NewGamePanel/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 24
+text = "New Game Setup"
+
+[node name="GridContainer" type="GridContainer" parent="NewGamePanel/VBoxContainer"]
+layout_mode = 2
+columns = 2
+
+[node name="StartingCreditsLabel" type="Label" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+text = "Starting Credits:"
+
+[node name="StartingCreditsInput" type="SpinBox" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+min_value = 100.0
+max_value = 1e+06
+step = 100.0
+value = 2000.0
+
+[node name="CargoCapacityLabel" type="Label" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+text = "Cargo Capacity (tons) :"
+
+[node name="CargoCapacityInput" type="SpinBox" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+min_value = 10.0
+max_value = 500.0
+step = 10.0
+value = 50.0
+
+[node name="FuelCostLabel" type="Label" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+text = "Base Fuel Cost:"
+
+[node name="FuelCostInput" type="SpinBox" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+min_value = 5.0
+step = 5.0
+value = 25.0
+
+[node name="WinGoalLabel" type="Label" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+text = "Win Goal:"
+
+[node name="WinGoalInput" type="SpinBox" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+min_value = 1000.0
+max_value = 1e+06
+step = 1000.0
+value = 25000.0
+
+[node name="StartSystemLabel" type="Label" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+text = "Start System:"
+
+[node name="StartSystemDropdown" type="OptionButton" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+
+[node name="MarketTypeLabel" type="Label" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+text = "Market Type:"
+
+[node name="MarketTypeDropdown" type="OptionButton" parent="NewGamePanel/VBoxContainer/GridContainer"]
+layout_mode = 2
+
+[node name="NewGameButton" type="Button" parent="NewGamePanel/VBoxContainer"]
+custom_minimum_size = Vector2(0, 50)
+layout_mode = 2
+text = "NEW GAME"
+
+[node name="GamePanel" type="Panel" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="HBoxContainer" type="HBoxContainer" parent="GamePanel"]
+layout_mode = 1
+anchors_preset = -1
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 10.0
+offset_top = 10.0
+offset_right = -10.0
+offset_bottom = -10.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="SystemListPanel" type="PanelContainer" parent="GamePanel/HBoxContainer"]
+custom_minimum_size = Vector2(300, 0)
+layout_mode = 2
+script = ExtResource("4_tefeu")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="GamePanel/HBoxContainer/SystemListPanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="SystemListHeader" type="Label" parent="GamePanel/HBoxContainer/SystemListPanel/VBoxContainer"]
+layout_mode = 2
+text = "Star Systems"
+
+[node name="SystemListFilter" type="HBoxContainer" parent="GamePanel/HBoxContainer/SystemListPanel/VBoxContainer"]
+layout_mode = 2
+
+[node name="SortByNameButton" type="Button" parent="GamePanel/HBoxContainer/SystemListPanel/VBoxContainer/SystemListFilter"]
+layout_mode = 2
+toggle_mode = true
+text = "Name"
+
+[node name="SortByDistanceButton" type="Button" parent="GamePanel/HBoxContainer/SystemListPanel/VBoxContainer/SystemListFilter"]
+layout_mode = 2
+toggle_mode = true
+text = "Distance"
+
+[node name="SortByTypeButton" type="Button" parent="GamePanel/HBoxContainer/SystemListPanel/VBoxContainer/SystemListFilter"]
+layout_mode = 2
+toggle_mode = true
+text = "Type"
+
+[node name="SystemList" type="ScrollContainer" parent="GamePanel/HBoxContainer/SystemListPanel/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="SystemListVbox" type="VBoxContainer" parent="GamePanel/HBoxContainer/SystemListPanel/VBoxContainer/SystemList"]
+layout_mode = 2
+
+[node name="MarketPanel" type="PanelContainer" parent="GamePanel/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+script = ExtResource("5_o6xl0")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="GamePanel/HBoxContainer/MarketPanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="MarketHeader" type="HBoxContainer" parent="GamePanel/HBoxContainer/MarketPanel/VBoxContainer"]
+layout_mode = 2
+
+[node name="MarketTitle" type="Label" parent="GamePanel/HBoxContainer/MarketPanel/VBoxContainer/MarketHeader"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "Market at [System]"
+
+[node name="CreditsDisplay" type="Label" parent="GamePanel/HBoxContainer/MarketPanel/VBoxContainer/MarketHeader"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "Credits: 0"
+
+[node name="MarketScroll" type="ScrollContainer" parent="GamePanel/HBoxContainer/MarketPanel/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="MarketVbox" type="VBoxContainer" parent="GamePanel/HBoxContainer/MarketPanel/VBoxContainer/MarketScroll"]
+layout_mode = 2
+
+[node name="CargoPanel" type="PanelContainer" parent="GamePanel/HBoxContainer"]
+custom_minimum_size = Vector2(350, 0)
+layout_mode = 2
+script = ExtResource("6_tefeu")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="GamePanel/HBoxContainer/CargoPanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="CargoHeader" type="VBoxContainer" parent="GamePanel/HBoxContainer/CargoPanel/VBoxContainer"]
+layout_mode = 2
+
+[node name="CargoTitle" type="Label" parent="GamePanel/HBoxContainer/CargoPanel/VBoxContainer/CargoHeader"]
+layout_mode = 2
+text = "Cargo Hold"
+
+[node name="CargoStats" type="Label" parent="GamePanel/HBoxContainer/CargoPanel/VBoxContainer/CargoHeader"]
+layout_mode = 2
+text = "0/50 tons"
+
+[node name="CreditsLarge" type="Label" parent="GamePanel/HBoxContainer/CargoPanel/VBoxContainer/CargoHeader"]
+layout_mode = 2
+text = "Credits: 0"
+
+[node name="JumpsDisplay" type="Label" parent="GamePanel/HBoxContainer/CargoPanel/VBoxContainer/CargoHeader"]
+layout_mode = 2
+text = "Jumps: 0"
+
+[node name="CargoScroll" type="ScrollContainer" parent="GamePanel/HBoxContainer/CargoPanel/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="CargoVbox" type="VBoxContainer" parent="GamePanel/HBoxContainer/CargoPanel/VBoxContainer/CargoScroll"]
+layout_mode = 2
+
+[node name="WinDialog" type="AcceptDialog" parent="."]
+title = "Victory!"
+initial_position = 1
+size = Vector2i(347, 100)
+
+[node name="WinMessage" type="Label" parent="WinDialog"]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 339.0
+offset_bottom = 51.0
+text = "Congratulations! You've reached your goal!"
+
+[node name="Label" type="Label" parent="WinDialog"]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 339.0
+offset_bottom = 51.0

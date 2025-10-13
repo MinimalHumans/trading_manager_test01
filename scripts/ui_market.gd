@@ -7,7 +7,6 @@ extends PanelContainer
 @onready var market_vbox: VBoxContainer = $VBoxContainer/MarketScroll/MarketVbox
 @onready var market_title: Label = $VBoxContainer/MarketHeader/MarketTitle
 
-
 # Signal
 signal item_purchased(item_id: int, item_name: String, quantity: float, price_per_ton: float)
 
@@ -44,9 +43,32 @@ func _rebuild_market_list():
 			items_by_category[category] = []
 		items_by_category[category].append(item)
 	
+	# Limit items per category to reduce choice paralysis (show 2 common, 2 rare, 1 exotic max)
+	for category in items_by_category.keys():
+		var items = items_by_category[category]
+		var limited_items = []
+		var common_count = 0
+		var rare_count = 0
+		var exotic_count = 0
+		
+		for item in items:
+			var rarity = item.get("rarity_name", "Common")
+			if rarity == "Common" and common_count < 3:
+				limited_items.append(item)
+				common_count += 1
+			elif rarity == "Rare" and rare_count < 2:
+				limited_items.append(item)
+				rare_count += 1
+			elif rarity == "Exotic" and exotic_count < 1:
+				limited_items.append(item)
+				exotic_count += 1
+		
+		items_by_category[category] = limited_items
+	
 	# Create UI for each category
 	for category in items_by_category.keys():
-		_create_category_section(category, items_by_category[category])
+		if items_by_category[category].size() > 0:  # Only show categories with items
+			_create_category_section(category, items_by_category[category])
 
 func _create_category_section(category_name: String, items: Array):
 	# Category header
@@ -56,14 +78,21 @@ func _create_category_section(category_name: String, items: Array):
 	header.add_theme_color_override("font_color", Color(0.8, 0.8, 1.0))
 	market_vbox.add_child(header)
 	
-	# Add items
+	# Create grid for items (2 columns)
+	var grid = GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	market_vbox.add_child(grid)
+	
+	# Add items to grid
 	for item in items:
 		var item_ui = _create_item_ui(item)
-		market_vbox.add_child(item_ui)
+		grid.add_child(item_ui)
 	
 	# Add spacer
 	var spacer = Control.new()
-	spacer.custom_minimum_size = Vector2(0, 10)
+	spacer.custom_minimum_size = Vector2(0, 15)
 	market_vbox.add_child(spacer)
 
 func _create_item_ui(item: Dictionary) -> Control:
@@ -158,16 +187,28 @@ func _create_item_ui(item: Dictionary) -> Control:
 	return container
 
 func _on_max_buy_pressed(quantity_input: SpinBox, price_per_ton: float):
-	var credits = player_state.get("credits", 0)
-	var cargo_free = player_state.get("cargo_free_tons", 0)
-	
-	# Calculate max by credits
-	var max_by_credits = floor(credits / price_per_ton)
-	
-	# Take minimum of credits limit and cargo limit
-	var max_quantity = min(max_by_credits, cargo_free)
-	
-	quantity_input.value = max_quantity
+	# Get fresh player state from game manager
+	var game_manager = get_node("/root/Main/GameManager")
+	if game_manager:
+		var fresh_state = game_manager.current_player_state
+		var credits = fresh_state.get("credits", 0)
+		var cargo_free = fresh_state.get("cargo_free_tons", 0)
+		
+		# Calculate max by credits
+		var max_by_credits = floor(credits / price_per_ton)
+		
+		# Take minimum of credits limit and cargo limit
+		var max_quantity = min(max_by_credits, cargo_free)
+		
+		quantity_input.value = max_quantity
+		print("MAX buy: credits=%s, cargo_free=%.1f, max_qty=%.1f" % [credits, cargo_free, max_quantity])
+	else:
+		# Fallback to cached state
+		var credits = player_state.get("credits", 0)
+		var cargo_free = player_state.get("cargo_free_tons", 0)
+		var max_by_credits = floor(credits / price_per_ton)
+		var max_quantity = min(max_by_credits, cargo_free)
+		quantity_input.value = max_quantity
 
 func _on_buy_pressed(item_id: int, item_name: String, quantity_input: SpinBox, price_per_ton: float):
 	var quantity = quantity_input.value

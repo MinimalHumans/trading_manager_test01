@@ -143,7 +143,7 @@ func get_connections_from_system(system_id: int) -> Array:
 # QUERY FUNCTIONS - Market Data
 # ============================================================================
 
-func get_market_buy_items(system_id: int) -> Array:
+func get_market_buy_items(system_id: int, market_type: String = "infinite") -> Array:
 	var query = """
 	SELECT 
 		item_id,
@@ -160,7 +160,23 @@ func get_market_buy_items(system_id: int) -> Array:
 	""" % system_id
 	
 	db.query(query)
-	return db.query_result
+	var items = db.query_result
+	
+	# If finite market, get actual stock info
+	if market_type != "infinite":
+		for item in items:
+			var stock_info = get_item_stock(system_id, item["item_id"])
+			item["current_stock"] = stock_info.get("current_stock_tons", 0)
+			item["max_stock"] = stock_info.get("max_stock_tons", 0)
+			
+			print("Item %s at system %d: %.1f/%.1f tons" % [
+				item["item_name"], 
+				system_id, 
+				item["current_stock"], 
+				item["max_stock"]
+			])
+	
+	return items
 
 func get_market_sell_prices(system_id: int) -> Dictionary:
 	var query = """
@@ -182,6 +198,154 @@ func get_market_sell_prices(system_id: int) -> Dictionary:
 		prices[row["item_id"]] = row
 	
 	return prices
+
+# ============================================================================
+# SYSTEM INVENTORY FUNCTIONS (Finite Markets)
+# ============================================================================
+
+func initialize_system_inventory(market_type: String):
+	"""Initialize inventory for all systems based on market type"""
+	if market_type == "infinite":
+		print("Market type is infinite, skipping inventory init")
+		return  # No inventory needed
+	
+	# Clear existing inventory
+	db.query("DELETE FROM system_inventory")
+	
+	print("Initializing system inventory for market type: %s" % market_type)
+	
+	var total_items_added = 0
+	
+	# Get all items available at each system
+	for system in all_systems:
+		var sys_id = system["system_id"]
+		var system_name = system["system_name"]
+		var market_items = get_market_buy_items(sys_id, "infinite")  # Get base list
+		
+		print("Processing system %d (%s): %d items" % [sys_id, system_name, market_items.size()])
+		
+		for item in market_items:
+			var item_id = item["item_id"]
+			var item_name = item.get("item_name", "Unknown")
+			var availability = item.get("availability_percent", 0.5)
+			
+			# Max stock = availability × 100 tons
+			var max_stock = availability * 100.0
+			var current_stock = max_stock  # Start fully stocked
+			
+			var insert_query = """
+			INSERT INTO system_inventory (system_id, item_id, current_stock_tons, max_stock_tons, last_updated_jump)
+			VALUES (%d, %d, %f, %f, 0)
+			""" % [sys_id, item_id, current_stock, max_stock]
+			
+			if db.query(insert_query):
+				total_items_added += 1
+			else:
+				print("Failed to insert: sys=%d, item=%d (%s)" % [sys_id, item_id, item_name])
+	
+	print("System inventory initialized: %d total inventory records created" % total_items_added)
+
+func get_item_stock(system_id: int, item_id: int) -> Dictionary:
+	"""Get current stock info for an item at a system"""
+	var query = """
+	SELECT current_stock_tons, max_stock_tons, last_updated_jump
+	FROM system_inventory
+	WHERE system_id = %d AND item_id = %d
+	""" % [system_id, item_id]
+	
+	db.query(query)
+	
+	if db.query_result.size() > 0:
+		return db.query_result[0]
+	
+	return {"current_stock_tons": 0, "max_stock_tons": 0, "last_updated_jump": 0}
+
+func update_item_stock(system_id: int, item_id: int, quantity_change: float) -> bool:
+	"""Update stock after purchase (negative quantity_change)"""
+	
+	# First check current stock
+	var check_query = """
+	SELECT current_stock_tons 
+	FROM system_inventory 
+	WHERE system_id = %d AND item_id = %d
+	""" % [system_id, item_id]
+	
+	db.query(check_query)
+	
+	if db.query_result.size() == 0:
+		print("ERROR: No inventory record for system %d, item %d" % [system_id, item_id])
+		return false
+	
+	var current = db.query_result[0]["current_stock_tons"]
+	var new_stock = current + quantity_change  # quantity_change will be negative for purchases
+	
+	print("Updating stock: system=%d, item=%d, current=%.1f, change=%.1f, new=%.1f" % [
+		system_id, item_id, current, quantity_change, new_stock
+	])
+	
+	if new_stock < 0:
+		print("ERROR: Stock would go negative!")
+		return false
+	
+	var query = """
+	UPDATE system_inventory
+	SET current_stock_tons = %f
+	WHERE system_id = %d AND item_id = %d
+	""" % [new_stock, system_id, item_id]
+	
+	var success = db.query(query)
+	
+	if success:
+		print("Stock updated successfully")
+	else:
+		print("ERROR: Failed to update stock")
+	
+	return success
+
+func regenerate_system_stock_instant(system_id: int):
+	"""Instantly refill all stock at a system (for finite-instant mode)"""
+	var query = """
+	UPDATE system_inventory
+	SET current_stock_tons = max_stock_tons
+	WHERE system_id = %d
+	""" % system_id
+	
+	db.query(query)
+	print("System %d stock instantly regenerated" % system_id)
+
+func regenerate_system_stock_turnbased(system_id: int, current_jump: int):
+	"""Regenerate stock based on jumps since last update (15% per jump)"""
+	var query = """
+	SELECT item_id, current_stock_tons, max_stock_tons, last_updated_jump
+	FROM system_inventory
+	WHERE system_id = %d
+	""" % system_id
+	
+	db.query(query)
+	
+	for row in db.query_result:
+		var item_id = row["item_id"]
+		var current = row["current_stock_tons"]
+		var max_stock = row["max_stock_tons"]
+		var last_jump = row["last_updated_jump"]
+		
+		# Calculate jumps since last update
+		var jumps_passed = current_jump - last_jump
+		
+		if jumps_passed > 0 and current < max_stock:
+			# Regenerate 15% per jump
+			var regen_amount = max_stock * 0.15 * jumps_passed
+			var new_stock = min(current + regen_amount, max_stock)
+			
+			var update_query = """
+			UPDATE system_inventory
+			SET current_stock_tons = %f, last_updated_jump = %d
+			WHERE system_id = %d AND item_id = %d
+			""" % [new_stock, current_jump, system_id, item_id]
+			
+			db.query(update_query)
+	
+	print("System %d stock regenerated (turn-based)" % system_id)
 
 # ============================================================================
 # QUERY FUNCTIONS - Player State
@@ -247,7 +411,9 @@ func execute_travel(destination_system_id: int, jump_distance: int, fuel_cost: f
 	
 	return db.query(query)
 
-func execute_purchase(item_id: int, quantity: float, total_cost: float) -> bool:
+func execute_purchase(item_id: int, quantity: float, total_cost: float, system_id: int = -1, market_type: String = "infinite") -> bool:
+	print("execute_purchase called: item=%d, qty=%.1f, system=%d, market=%s" % [item_id, quantity, system_id, market_type])
+	
 	# Deduct credits
 	var update_credits = """
 	UPDATE player_state 
@@ -258,6 +424,20 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float) -> bool:
 	if not db.query(update_credits):
 		print("Failed to deduct credits")
 		return false
+	
+	# For finite markets, deduct from system stock
+	if market_type != "infinite" and system_id > 0:
+		print("Finite market - updating stock")
+		if not update_item_stock(system_id, item_id, -quantity):
+			print("Failed to update system stock")
+			# Rollback credits
+			var rollback = """
+			UPDATE player_state 
+			SET credits = credits + %f 
+			WHERE player_id = 1
+			""" % total_cost
+			db.query(rollback)
+			return false
 	
 	# Check if item already in inventory
 	var check_query = "SELECT quantity_tons FROM player_inventory WHERE player_id = 1 AND item_id = %d" % item_id

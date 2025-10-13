@@ -64,14 +64,25 @@ func connect_ui_signals():
 
 func _on_start_game(config: Dictionary):
 	print("Starting new game with config: ", config)
+	print("Market type from config: ", config.get("market_type", "infinite"))
 	
 	# Initialize database
 	if not db_manager.initialize_new_game(config):
 		push_error("Failed to initialize new game")
 		return
 	
-	# Load initial state
+	# Load initial state to get market type
 	refresh_player_state()
+	print("Market type from player state: ", current_player_state.get("market_type", "unknown"))
+	
+	# Initialize system inventory for finite markets
+	var market_type = current_player_state.get("market_type", "infinite")
+	print("About to initialize inventory with type: ", market_type)
+	
+	if market_type != "infinite":
+		db_manager.initialize_system_inventory(market_type)
+	else:
+		print("Skipping inventory init - infinite mode")
 	
 	# Hide new game panel, show game panel
 	new_game_panel.visible = false
@@ -106,11 +117,24 @@ func refresh_current_system():
 
 func refresh_market():
 	var system_id = current_player_state.get("current_system_id", 0)
-	market_buy_items = db_manager.get_market_buy_items(system_id)
+	var market_type = current_player_state.get("market_type", "infinite")
+	
+	print("refresh_market: system=%d, market_type=%s" % [system_id, market_type])
+	
+	market_buy_items = db_manager.get_market_buy_items(system_id, market_type)
 	market_sell_prices = db_manager.get_market_sell_prices(system_id)
 	
+	print("Got %d market items" % market_buy_items.size())
+	if market_buy_items.size() > 0:
+		var first_item = market_buy_items[0]
+		print("First item has keys: ", first_item.keys())
+		if first_item.has("current_stock"):
+			print("First item stock: %.1f/%.1f" % [first_item["current_stock"], first_item["max_stock"]])
+		else:
+			print("First item has NO current_stock key!")
+	
 	if market_ui:
-		market_ui.update_market(market_buy_items, current_player_state)
+		market_ui.update_market(market_buy_items, current_player_state, market_type)
 
 func refresh_cargo():
 	player_inventory = db_manager.get_player_inventory()
@@ -129,6 +153,8 @@ func _on_system_selected(system_id: int):
 func _on_travel_requested(destination_id: int, distance: int):
 	var fuel_cost = distance * current_player_state.get("base_fuel_cost", 25)
 	var current_credits = current_player_state.get("credits", 0)
+	var old_system_id = current_player_state.get("current_system_id", 0)
+	var market_type = current_player_state.get("market_type", "infinite")
 	
 	# Validate travel
 	if current_credits < fuel_cost:
@@ -151,6 +177,16 @@ func _on_travel_requested(destination_id: int, distance: int):
 	# Execute travel
 	if db_manager.execute_travel(destination_id, distance, fuel_cost):
 		print("Traveled to system %d" % destination_id)
+		
+		# Handle stock regeneration based on market type
+		if market_type == "finite_instant":
+			# Regenerate stock at the system we're entering
+			db_manager.regenerate_system_stock_instant(destination_id)
+		elif market_type == "finite_turn":
+			# Regenerate stock at destination based on jumps since last visit
+			var new_jump_count = current_player_state.get("total_jumps", 0) + distance
+			db_manager.regenerate_system_stock_turnbased(destination_id, new_jump_count)
+		
 		refresh_player_state()
 		refresh_current_system()
 		refresh_market()
@@ -167,6 +203,10 @@ func _on_item_purchased(item_id: int, item_name: String, quantity: float, price_
 	var total_cost = quantity * price_per_ton
 	var current_credits = current_player_state.get("credits", 0)
 	var cargo_free = current_player_state.get("cargo_free_tons", 0)
+	var system_id = current_player_state.get("current_system_id", 0)
+	var market_type = current_player_state.get("market_type", "infinite")
+	
+	print("Purchase attempt: %s, qty=%.1f, market_type=%s" % [item_name, quantity, market_type])
 	
 	# Validate purchase
 	if current_credits < total_cost:
@@ -176,6 +216,17 @@ func _on_item_purchased(item_id: int, item_name: String, quantity: float, price_
 	if cargo_free < quantity:
 		_show_error("Insufficient cargo space!")
 		return
+	
+	# For finite markets, check stock availability
+	if market_type != "infinite":
+		var stock_info = db_manager.get_item_stock(system_id, item_id)
+		var available = stock_info.get("current_stock_tons", 0)
+		
+		print("Stock check: available=%.1f, requested=%.1f" % [available, quantity])
+		
+		if quantity > available:
+			_show_error("Insufficient stock! Only %.1f tons available." % available)
+			return
 	
 	# Large purchase confirmation
 	if total_cost > current_credits * 0.5:
@@ -192,13 +243,13 @@ func _on_item_purchased(item_id: int, item_name: String, quantity: float, price_
 			return
 	
 	# Execute purchase
-	if db_manager.execute_purchase(item_id, quantity, total_cost):
+	if db_manager.execute_purchase(item_id, quantity, total_cost, system_id, market_type):
 		print("Purchased %.1f tons of %s for %s" % [quantity, item_name, db_manager.format_credits(total_cost)])
 		refresh_player_state()
+		refresh_market()  # Refresh to show updated stock
 		refresh_cargo()
 		credits_changed.emit()
 		cargo_changed.emit()
-		market_ui.update_market(market_buy_items, current_player_state)
 	else:
 		_show_error("Purchase failed!")
 

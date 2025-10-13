@@ -168,13 +168,8 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite") -> A
 			var stock_info = get_item_stock(system_id, item["item_id"])
 			item["current_stock"] = stock_info.get("current_stock_tons", 0)
 			item["max_stock"] = stock_info.get("max_stock_tons", 0)
-			
-			print("Item %s at system %d: %.1f/%.1f tons" % [
-				item["item_name"], 
-				system_id, 
-				item["current_stock"], 
-				item["max_stock"]
-			])
+		
+		print("Loaded market for system %d: %d items with stock data" % [system_id, items.size()])
 	
 	return items
 
@@ -204,46 +199,55 @@ func get_market_sell_prices(system_id: int) -> Dictionary:
 # ============================================================================
 
 func initialize_system_inventory(market_type: String):
-	"""Initialize inventory for all systems based on market type"""
-	if market_type == "infinite":
-		print("Market type is infinite, skipping inventory init")
-		return  # No inventory needed
+	"""DEPRECATED - No longer used, keeping for reference"""
+	print("WARNING: initialize_system_inventory called but lazy loading is now used")
+
+func has_inventory_for_system(system_id: int) -> bool:
+	"""Check if a system has inventory initialized"""
+	var query = """
+	SELECT COUNT(*) as count
+	FROM system_inventory
+	WHERE system_id = %d
+	""" % system_id
 	
-	# Clear existing inventory
-	db.query("DELETE FROM system_inventory")
+	db.query(query)
 	
-	print("Initializing system inventory for market type: %s" % market_type)
+	if db.query_result.size() > 0:
+		return db.query_result[0]["count"] > 0
 	
-	var total_items_added = 0
+	return false
+
+func initialize_system_inventory_lazy(system_id: int):
+	"""Initialize inventory for a single system on first visit"""
+	print("Lazy initializing inventory for system %d" % system_id)
 	
-	# Get all items available at each system
-	for system in all_systems:
-		var sys_id = system["system_id"]
-		var system_name = system["system_name"]
-		var market_items = get_market_buy_items(sys_id, "infinite")  # Get base list
+	# Get all items available at this system
+	var market_items = get_market_buy_items(system_id, "infinite")  # Get base list without stock
+	
+	print("  Found %d items for this system" % market_items.size())
+	
+	# Build one big INSERT with all items
+	var values_list = []
+	
+	for item in market_items:
+		var item_id = item["item_id"]
+		var availability = item.get("availability_percent", 0.5)
 		
-		print("Processing system %d (%s): %d items" % [sys_id, system_name, market_items.size()])
+		# Max stock = availability × 100 tons
+		var max_stock = availability * 100.0
+		var current_stock = max_stock  # Start fully stocked
 		
-		for item in market_items:
-			var item_id = item["item_id"]
-			var item_name = item.get("item_name", "Unknown")
-			var availability = item.get("availability_percent", 0.5)
-			
-			# Max stock = availability × 100 tons
-			var max_stock = availability * 100.0
-			var current_stock = max_stock  # Start fully stocked
-			
-			var insert_query = """
-			INSERT INTO system_inventory (system_id, item_id, current_stock_tons, max_stock_tons, last_updated_jump)
-			VALUES (%d, %d, %f, %f, 0)
-			""" % [sys_id, item_id, current_stock, max_stock]
-			
-			if db.query(insert_query):
-				total_items_added += 1
-			else:
-				print("Failed to insert: sys=%d, item=%d (%s)" % [sys_id, item_id, item_name])
+		values_list.append("(%d, %d, %f, %f, 0)" % [system_id, item_id, current_stock, max_stock])
 	
-	print("System inventory initialized: %d total inventory records created" % total_items_added)
+	if values_list.size() > 0:
+		# Batch insert all items at once
+		var insert_query = """
+		INSERT INTO system_inventory (system_id, item_id, current_stock_tons, max_stock_tons, last_updated_jump)
+		VALUES %s
+		""" % ", ".join(values_list)
+		
+		db.query(insert_query)
+		print("  Initialized %d items for system %d" % [values_list.size(), system_id])
 
 func get_item_stock(system_id: int, item_id: int) -> Dictionary:
 	"""Get current stock info for an item at a system"""

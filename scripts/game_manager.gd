@@ -75,14 +75,13 @@ func _on_start_game(config: Dictionary):
 	refresh_player_state()
 	print("Market type from player state: ", current_player_state.get("market_type", "unknown"))
 	
-	# Initialize system inventory for finite markets
 	var market_type = current_player_state.get("market_type", "infinite")
-	print("About to initialize inventory with type: ", market_type)
 	
+	# For finite markets, clear any old inventory data
+	# Inventory will be lazily initialized as systems are visited
 	if market_type != "infinite":
-		db_manager.initialize_system_inventory(market_type)
-	else:
-		print("Skipping inventory init - infinite mode")
+		db_manager.db.query("DELETE FROM system_inventory")
+		print("Cleared inventory table - will lazy load as systems are visited")
 	
 	# Hide new game panel, show game panel
 	new_game_panel.visible = false
@@ -91,6 +90,12 @@ func _on_start_game(config: Dictionary):
 	# Initialize UI
 	system_list_ui.initialize(db_manager, current_player_state)
 	refresh_current_system()
+	
+	# Initialize inventory for starting system if needed
+	var starting_system = current_player_state.get("current_system_id", 0)
+	if market_type != "infinite" and not db_manager.has_inventory_for_system(starting_system):
+		db_manager.initialize_system_inventory_lazy(starting_system)
+	
 	refresh_market()
 	refresh_cargo()
 	
@@ -119,19 +124,10 @@ func refresh_market():
 	var system_id = current_player_state.get("current_system_id", 0)
 	var market_type = current_player_state.get("market_type", "infinite")
 	
-	print("refresh_market: system=%d, market_type=%s" % [system_id, market_type])
-	
 	market_buy_items = db_manager.get_market_buy_items(system_id, market_type)
 	market_sell_prices = db_manager.get_market_sell_prices(system_id)
 	
-	print("Got %d market items" % market_buy_items.size())
-	if market_buy_items.size() > 0:
-		var first_item = market_buy_items[0]
-		print("First item has keys: ", first_item.keys())
-		if first_item.has("current_stock"):
-			print("First item stock: %.1f/%.1f" % [first_item["current_stock"], first_item["max_stock"]])
-		else:
-			print("First item has NO current_stock key!")
+	print("Refreshing market: %d items, market_type=%s" % [market_buy_items.size(), market_type])
 	
 	if market_ui:
 		market_ui.update_market(market_buy_items, current_player_state, market_type)

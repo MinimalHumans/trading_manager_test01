@@ -6,7 +6,6 @@ extends PanelContainer
 @onready var credits_display: Label = $VBoxContainer/MarketHeader/CreditsDisplay
 @onready var market_vbox: VBoxContainer = $VBoxContainer/MarketScroll/MarketVbox
 @onready var market_title: Label = $VBoxContainer/MarketHeader/MarketTitle
-
 # Signal
 signal item_purchased(item_id: int, item_name: String, quantity: float, price_per_ton: float)
 
@@ -114,14 +113,20 @@ func _create_item_ui(item: Dictionary) -> Control:
 		if current_stock <= 0:
 			is_out_of_stock = true
 	
-	# Style
+	# Get category color
+	var category_name = item.get("category_name", "Unknown")
+	var category_color = db_manager.get_category_color(category_name)
+	
+	# Style with category color border
 	var style = StyleBoxFlat.new()
 	if is_out_of_stock:
 		style.bg_color = Color(0.15, 0.15, 0.15)  # Darker for out of stock
 	else:
 		style.bg_color = Color(0.2, 0.2, 0.25)
-	style.border_color = Color(0.4, 0.4, 0.5)
-	style.border_width_left = 2
+	
+	# Color-coded border (thicker on left for visual pop)
+	style.border_color = category_color
+	style.border_width_left = 4
 	style.border_width_top = 2
 	style.border_width_right = 2
 	style.border_width_bottom = 2
@@ -132,12 +137,17 @@ func _create_item_ui(item: Dictionary) -> Control:
 	vbox.add_theme_constant_override("separation", 3)
 	container.add_child(vbox)
 	
-	# Item name
+	# Item name with category color
 	var name_label = Label.new()
 	name_label.text = item.get("item_name", "Unknown")
 	if is_out_of_stock:
 		name_label.text += " [OUT OF STOCK]"
 		name_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	else:
+		# Apply category color to item name (slightly brightened for readability)
+		var bright_color = category_color * 1.3  # Brighten by 30%
+		bright_color.a = 1.0  # Ensure full opacity
+		name_label.add_theme_color_override("font_color", bright_color)
 	name_label.add_theme_font_size_override("font_size", 14)
 	vbox.add_child(name_label)
 	

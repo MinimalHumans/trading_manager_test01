@@ -566,6 +566,25 @@ func get_planet_type_color(planet_type: String) -> Color:
 		_:
 			return Color(0.5, 0.5, 0.5)
 
+func get_category_color(category_name: String) -> Color:
+	match category_name:
+		"Food & Agriculture":
+			return Color(0.3, 0.69, 0.31)  # Green (Agricultural)
+		"Raw Materials":
+			return Color(0.62, 0.62, 0.62)  # Gray (Mining)
+		"Manufactured Goods":
+			return Color(0.13, 0.59, 0.95)  # Blue (Manufacturing)
+		"Technology":
+			return Color(0.61, 0.15, 0.69)  # Purple (Research)
+		"Medical Supplies":
+			return Color(0.96, 0.26, 0.21)  # Red (Medical)
+		"Luxury Goods":
+			return Color(1.0, 0.84, 0.0)  # Gold (Trade Hub)
+		"Weapons & Ordnance":
+			return Color(0.55, 0.0, 0.0)  # Dark red (Military)
+		_:
+			return Color(0.7, 0.7, 0.7)  # Default gray
+
 func format_credits(amount: float) -> String:
 	return "%s cr" % [_format_number_with_commas(int(amount))]
 

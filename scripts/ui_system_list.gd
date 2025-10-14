@@ -83,9 +83,6 @@ func _calculate_distances():
 	
 	# Copy visited distances to system_distances
 	system_distances = visited
-	
-	print("Calculated distances from system %d:" % current_system_id)
-	print("Total reachable systems: %d" % system_distances.size())
 
 func _get_distance_to_system(target_id: int) -> int:
 	return system_distances.get(target_id, 999)

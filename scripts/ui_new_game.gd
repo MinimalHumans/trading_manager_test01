@@ -68,15 +68,11 @@ func _on_new_game_pressed():
 	if selected_system_id == -1:
 		var random_index = randi() % available_systems.size()
 		selected_system_id = available_systems[random_index]["system_id"]
-		print("Random system selected: %d" % selected_system_id)
 	
 	# Get market type
 	var market_type_names = ["infinite", "finite_instant", "finite_turn"]
 	var selected_index = market_type_dropdown.get_selected_id()
 	var market_type = market_type_names[selected_index]
-	
-	print("Market type dropdown selected index: %d" % selected_index)
-	print("Market type string: %s" % market_type)
 	
 	# Build config dictionary
 	var config = {
@@ -87,8 +83,6 @@ func _on_new_game_pressed():
 		"starting_system": selected_system_id,
 		"market_type": market_type
 	}
-	
-	print("Config being sent: ", config)
 	
 	# Emit signal
 	start_game.emit(config)

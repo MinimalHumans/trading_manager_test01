@@ -28,7 +28,6 @@ func initialize_database() -> bool:
 		push_error("Failed to open database at: " + db_path)
 		return false
 	
-	print("Database opened successfully")
 	cache_static_data()
 	return true
 
@@ -38,11 +37,9 @@ func cache_static_data():
 	all_systems = get_all_systems()
 	all_categories = get_all_categories()
 	system_connections = get_all_connections()
-	print("Cached %d items, %d systems" % [all_items.size(), all_systems.size()])
 	
 	# Emit ready signal
 	database_ready.emit()
-	print("Database ready signal emitted")
 
 # ============================================================================
 # QUERY FUNCTIONS - Items and Categories
@@ -144,34 +141,59 @@ func get_connections_from_system(system_id: int) -> Array:
 # ============================================================================
 
 func get_market_buy_items(system_id: int, market_type: String = "infinite") -> Array:
-	var query = """
-	SELECT 
-		item_id,
-		item_name,
-		category_name,
-		rarity_name,
-		base_price,
-		sell_price,
-		availability_percent,
-		price_category
-	FROM system_market_buy
-	WHERE system_id = %d
-	ORDER BY category_name, rarity_name, item_name
-	""" % system_id
-	
-	db.query(query)
-	var items = db.query_result
-	
-	# If finite market, get actual stock info
-	if market_type != "infinite":
-		for item in items:
-			var stock_info = get_item_stock(system_id, item["item_id"])
-			item["current_stock"] = stock_info.get("current_stock_tons", 0)
-			item["max_stock"] = stock_info.get("max_stock_tons", 0)
+	if market_type == "infinite":
+		# Use VIEW for infinite markets
+		var query = """
+		SELECT 
+			item_id,
+			item_name,
+			category_name,
+			rarity_name,
+			base_price,
+			sell_price,
+			availability_percent,
+			price_category
+		FROM system_market_buy
+		WHERE system_id = %d
+		ORDER BY category_name, rarity_name, item_name
+		""" % system_id
 		
-		print("Loaded market for system %d: %d items with stock data" % [system_id, items.size()])
-	
-	return items
+		db.query(query)
+		return db.query_result
+	else:
+		# For finite markets, query directly from inventory (much faster)
+		var query = """
+		SELECT 
+			i.item_id,
+			i.item_name,
+			c.category_name,
+			r.rarity_name,
+			i.base_price,
+			ROUND(i.base_price * (1 + COALESCE(pcm.price_modifier, 0)), 2) as sell_price,
+			si.current_stock_tons as current_stock,
+			si.max_stock_tons as max_stock,
+			CASE 
+				WHEN COALESCE(pcm.price_modifier, 0) <= -0.40 THEN 'Very Low'
+				WHEN COALESCE(pcm.price_modifier, 0) <= -0.20 THEN 'Low'
+				WHEN COALESCE(pcm.price_modifier, 0) <= 0.19 THEN 'Average'
+				WHEN COALESCE(pcm.price_modifier, 0) <= 0.49 THEN 'High'
+				ELSE 'Very High'
+			END as price_category
+		FROM system_inventory si
+		JOIN items i ON si.item_id = i.item_id
+		JOIN categories c ON i.category_id = c.category_id
+		JOIN rarity_tiers r ON i.rarity_id = r.rarity_id
+		JOIN systems s ON si.system_id = s.system_id
+		LEFT JOIN planet_category_modifiers pcm ON 
+			s.planet_type_id = pcm.planet_type_id AND
+			i.category_id = pcm.category_id AND
+			pcm.price_modifier < 0
+		WHERE si.system_id = %d
+		ORDER BY c.category_name, r.rarity_name, i.item_name
+		""" % system_id
+		
+		db.query(query)
+		return db.query_result
 
 func get_market_sell_prices(system_id: int) -> Dictionary:
 	var query = """
@@ -199,8 +221,36 @@ func get_market_sell_prices(system_id: int) -> Dictionary:
 # ============================================================================
 
 func initialize_system_inventory(market_type: String):
-	"""DEPRECATED - No longer used, keeping for reference"""
-	print("WARNING: initialize_system_inventory called but lazy loading is now used")
+	"""DEPRECATED - No longer used"""
+	pass
+
+func verify_inventory_integrity() -> Dictionary:
+	"""Debug function to check inventory state"""
+	var query = """
+	SELECT 
+		system_id,
+		COUNT(*) as item_count,
+		SUM(CASE WHEN current_stock_tons > 0 THEN 1 ELSE 0 END) as items_with_stock
+	FROM system_inventory
+	GROUP BY system_id
+	"""
+	
+	db.query(query)
+	
+	var results = {}
+	for row in db.query_result:
+		results[row["system_id"]] = {
+			"items": row["item_count"],
+			"with_stock": row["items_with_stock"]
+		}
+	
+	print("=== INVENTORY INTEGRITY CHECK ===")
+	print("Systems with inventory: %d" % results.size())
+	for sys_id in results.keys():
+		var data = results[sys_id]
+		print("  System %d: %d items, %d with stock" % [sys_id, data["items"], data["with_stock"]])
+	
+	return results
 
 func has_inventory_for_system(system_id: int) -> bool:
 	"""Check if a system has inventory initialized"""
@@ -219,35 +269,37 @@ func has_inventory_for_system(system_id: int) -> bool:
 
 func initialize_system_inventory_lazy(system_id: int):
 	"""Initialize inventory for a single system on first visit"""
-	print("Lazy initializing inventory for system %d" % system_id)
+	
+	# Double-check we're not reinitializing
+	if has_inventory_for_system(system_id):
+		return
 	
 	# Get all items available at this system
-	var market_items = get_market_buy_items(system_id, "infinite")  # Get base list without stock
+	var market_items = get_market_buy_items(system_id, "infinite")
 	
-	print("  Found %d items for this system" % market_items.size())
+	if market_items.size() == 0:
+		push_error("No market items found for system %d" % system_id)
+		return
 	
-	# Build one big INSERT with all items
-	var values_list = []
+	# Use transaction for MUCH faster batch inserts
+	db.query("BEGIN TRANSACTION")
 	
+	# Insert items one by one (but within transaction)
 	for item in market_items:
 		var item_id = item["item_id"]
 		var availability = item.get("availability_percent", 0.5)
-		
-		# Max stock = availability × 100 tons
 		var max_stock = availability * 100.0
-		var current_stock = max_stock  # Start fully stocked
+		var current_stock = max_stock
 		
-		values_list.append("(%d, %d, %f, %f, 0)" % [system_id, item_id, current_stock, max_stock])
-	
-	if values_list.size() > 0:
-		# Batch insert all items at once
 		var insert_query = """
 		INSERT INTO system_inventory (system_id, item_id, current_stock_tons, max_stock_tons, last_updated_jump)
-		VALUES %s
-		""" % ", ".join(values_list)
+		VALUES (%d, %d, %f, %f, 0)
+		""" % [system_id, item_id, current_stock, max_stock]
 		
 		db.query(insert_query)
-		print("  Initialized %d items for system %d" % [values_list.size(), system_id])
+	
+	# Commit all at once
+	db.query("COMMIT")
 
 func get_item_stock(system_id: int, item_id: int) -> Dictionary:
 	"""Get current stock info for an item at a system"""
@@ -267,7 +319,6 @@ func get_item_stock(system_id: int, item_id: int) -> Dictionary:
 func update_item_stock(system_id: int, item_id: int, quantity_change: float) -> bool:
 	"""Update stock after purchase (negative quantity_change)"""
 	
-	# First check current stock
 	var check_query = """
 	SELECT current_stock_tons 
 	FROM system_inventory 
@@ -277,18 +328,14 @@ func update_item_stock(system_id: int, item_id: int, quantity_change: float) -> 
 	db.query(check_query)
 	
 	if db.query_result.size() == 0:
-		print("ERROR: No inventory record for system %d, item %d" % [system_id, item_id])
+		push_error("No inventory record for system %d, item %d" % [system_id, item_id])
 		return false
 	
 	var current = db.query_result[0]["current_stock_tons"]
-	var new_stock = current + quantity_change  # quantity_change will be negative for purchases
-	
-	print("Updating stock: system=%d, item=%d, current=%.1f, change=%.1f, new=%.1f" % [
-		system_id, item_id, current, quantity_change, new_stock
-	])
+	var new_stock = current + quantity_change
 	
 	if new_stock < 0:
-		print("ERROR: Stock would go negative!")
+		push_error("Stock would go negative!")
 		return false
 	
 	var query = """
@@ -297,17 +344,13 @@ func update_item_stock(system_id: int, item_id: int, quantity_change: float) -> 
 	WHERE system_id = %d AND item_id = %d
 	""" % [new_stock, system_id, item_id]
 	
-	var success = db.query(query)
-	
-	if success:
-		print("Stock updated successfully")
-	else:
-		print("ERROR: Failed to update stock")
-	
-	return success
+	return db.query(query)
 
 func regenerate_system_stock_instant(system_id: int):
 	"""Instantly refill all stock at a system (for finite-instant mode)"""
+	if not has_inventory_for_system(system_id):
+		return
+	
 	var query = """
 	UPDATE system_inventory
 	SET current_stock_tons = max_stock_tons
@@ -315,41 +358,27 @@ func regenerate_system_stock_instant(system_id: int):
 	""" % system_id
 	
 	db.query(query)
-	print("System %d stock instantly regenerated" % system_id)
 
 func regenerate_system_stock_turnbased(system_id: int, current_jump: int):
 	"""Regenerate stock based on jumps since last update (15% per jump)"""
+	if not has_inventory_for_system(system_id):
+		return
+	
+	# Single UPDATE that handles all items at once
 	var query = """
-	SELECT item_id, current_stock_tons, max_stock_tons, last_updated_jump
-	FROM system_inventory
-	WHERE system_id = %d
-	""" % system_id
+	UPDATE system_inventory
+	SET 
+		current_stock_tons = MIN(
+			current_stock_tons + (max_stock_tons * 0.15 * (%d - last_updated_jump)),
+			max_stock_tons
+		),
+		last_updated_jump = %d
+	WHERE system_id = %d 
+		AND (%d - last_updated_jump) > 0
+		AND current_stock_tons < max_stock_tons
+	""" % [current_jump, current_jump, system_id, current_jump]
 	
 	db.query(query)
-	
-	for row in db.query_result:
-		var item_id = row["item_id"]
-		var current = row["current_stock_tons"]
-		var max_stock = row["max_stock_tons"]
-		var last_jump = row["last_updated_jump"]
-		
-		# Calculate jumps since last update
-		var jumps_passed = current_jump - last_jump
-		
-		if jumps_passed > 0 and current < max_stock:
-			# Regenerate 15% per jump
-			var regen_amount = max_stock * 0.15 * jumps_passed
-			var new_stock = min(current + regen_amount, max_stock)
-			
-			var update_query = """
-			UPDATE system_inventory
-			SET current_stock_tons = %f, last_updated_jump = %d
-			WHERE system_id = %d AND item_id = %d
-			""" % [new_stock, current_jump, system_id, item_id]
-			
-			db.query(update_query)
-	
-	print("System %d stock regenerated (turn-based)" % system_id)
 
 # ============================================================================
 # QUERY FUNCTIONS - Player State
@@ -416,7 +445,8 @@ func execute_travel(destination_system_id: int, jump_distance: int, fuel_cost: f
 	return db.query(query)
 
 func execute_purchase(item_id: int, quantity: float, total_cost: float, system_id: int = -1, market_type: String = "infinite") -> bool:
-	print("execute_purchase called: item=%d, qty=%.1f, system=%d, market=%s" % [item_id, quantity, system_id, market_type])
+	# Use transaction for atomic operations
+	db.query("BEGIN TRANSACTION")
 	
 	# Deduct credits
 	var update_credits = """
@@ -426,21 +456,13 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 	""" % total_cost
 	
 	if not db.query(update_credits):
-		print("Failed to deduct credits")
+		db.query("ROLLBACK")
 		return false
 	
 	# For finite markets, deduct from system stock
 	if market_type != "infinite" and system_id > 0:
-		print("Finite market - updating stock")
 		if not update_item_stock(system_id, item_id, -quantity):
-			print("Failed to update system stock")
-			# Rollback credits
-			var rollback = """
-			UPDATE player_state 
-			SET credits = credits + %f 
-			WHERE player_id = 1
-			""" % total_cost
-			db.query(rollback)
+			db.query("ROLLBACK")
 			return false
 	
 	# Check if item already in inventory
@@ -458,7 +480,7 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 		""" % [new_qty, item_id]
 		
 		if not db.query(update_inventory):
-			print("Failed to update inventory")
+			db.query("ROLLBACK")
 			return false
 	else:
 		# Insert new
@@ -468,10 +490,10 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 		""" % [item_id, quantity]
 		
 		if not db.query(insert_inventory):
-			print("Failed to insert into inventory")
+			db.query("ROLLBACK")
 			return false
 	
-	print("Purchase successful: %f units of item %d" % [quantity, item_id])
+	db.query("COMMIT")
 	return true
 
 func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
@@ -483,7 +505,6 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
 	""" % total_revenue
 	
 	if not db.query(update_credits):
-		print("Failed to add credits")
 		return false
 	
 	# Get current quantity
@@ -491,7 +512,6 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
 	db.query(check_query)
 	
 	if db.query_result.size() == 0:
-		print("Item not in inventory")
 		return false
 	
 	var current_qty = db.query_result[0]["quantity_tons"]
@@ -505,7 +525,6 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
 		""" % item_id
 		
 		if not db.query(delete_query):
-			print("Failed to delete from inventory")
 			return false
 	else:
 		# Update quantity
@@ -516,10 +535,8 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
 		""" % [new_qty, item_id]
 		
 		if not db.query(update_inventory):
-			print("Failed to update inventory")
 			return false
 	
-	print("Sale successful: %f units of item %d for %f credits" % [quantity, item_id, total_revenue])
 	return true
 
 # ============================================================================

@@ -36,8 +36,6 @@ func _rebuild_market_list():
 	for child in market_vbox.get_children():
 		child.queue_free()
 	
-	print("Rebuilding market list with %d items" % market_items.size())
-	
 	# Group items by category
 	var items_by_category = {}
 	for item in market_items:
@@ -46,8 +44,7 @@ func _rebuild_market_list():
 			items_by_category[category] = []
 		items_by_category[category].append(item)
 	
-	# Limit items per category to reduce choice paralysis (show 2 common, 2 rare, 1 exotic max)
-	var total_items_shown = 0
+	# Limit items per category to reduce choice paralysis
 	for category in items_by_category.keys():
 		var items = items_by_category[category]
 		var limited_items = []
@@ -68,13 +65,10 @@ func _rebuild_market_list():
 				exotic_count += 1
 		
 		items_by_category[category] = limited_items
-		total_items_shown += limited_items.size()
-	
-	print("After limiting: showing %d items" % total_items_shown)
 	
 	# Create UI for each category
 	for category in items_by_category.keys():
-		if items_by_category[category].size() > 0:  # Only show categories with items
+		if items_by_category[category].size() > 0:
 			_create_category_section(category, items_by_category[category])
 
 func _create_category_section(category_name: String, items: Array):
@@ -243,11 +237,7 @@ func _on_max_buy_pressed(quantity_input: SpinBox, price_per_ton: float, item: Di
 		var fresh_state = game_manager.current_player_state
 		var credits = fresh_state.get("credits", 0)
 		var cargo_free = fresh_state.get("cargo_free_tons", 0)
-		
-		# Calculate max by credits
 		var max_by_credits = floor(credits / price_per_ton)
-		
-		# Take minimum of credits limit and cargo limit
 		var max_quantity = min(max_by_credits, cargo_free)
 		
 		# For finite markets, also check stock
@@ -256,11 +246,8 @@ func _on_max_buy_pressed(quantity_input: SpinBox, price_per_ton: float, item: Di
 			max_quantity = min(max_quantity, current_stock)
 		
 		quantity_input.value = max_quantity
-		print("MAX buy: credits=%s, cargo_free=%.1f, stock=%.1f, max_qty=%.1f" % [
-			credits, cargo_free, item.get("current_stock", 999), max_quantity
-		])
 	else:
-		# Fallback to cached state
+		# Fallback
 		var credits = player_state.get("credits", 0)
 		var cargo_free = player_state.get("cargo_free_tons", 0)
 		var max_by_credits = floor(credits / price_per_ton)

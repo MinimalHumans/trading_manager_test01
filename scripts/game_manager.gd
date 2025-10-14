@@ -19,6 +19,12 @@ var market_buy_items: Array = []
 var market_sell_prices: Dictionary = {}
 var player_inventory: Array = []
 
+# NEW: Universe market system
+var universe_market_values: Dictionary = {}
+var market_fluctuation_amount: float = 0.3  # Tunable: how much market changes per jump
+var connected_planet_discount: float = 0.10  # Tunable: discount for goods from 1-jump neighbors
+var market_value_per_point: float = 0.05  # Tunable: price change per market point (5% = balanced with planet modifiers)
+
 # Signals
 signal game_started
 signal player_state_changed
@@ -27,6 +33,7 @@ signal credits_changed
 signal cargo_changed
 signal game_won
 signal confirmation_result(confirmed: bool)
+signal market_values_changed  # NEW: Signal when market fluctuates
 
 func _ready():
 	# Wait for database to initialize
@@ -70,6 +77,9 @@ func _on_start_game(config: Dictionary):
 		push_error("Failed to initialize new game")
 		return
 	print("Init DB: %d ms" % (Time.get_ticks_msec() - start_time))
+	
+	# NEW: Initialize universe market (all categories start at 5.0)
+	initialize_universe_market()
 	
 	# Load initial state
 	var t1 = Time.get_ticks_msec()
@@ -116,6 +126,95 @@ func _on_start_game(config: Dictionary):
 	
 	game_started.emit()
 
+# NEW: Initialize universe market values
+func initialize_universe_market():
+	var categories = [
+		"Food & Agriculture",
+		"Raw Materials",
+		"Manufactured Goods",
+		"Technology",
+		"Medical Supplies",
+		"Luxury Goods",
+		"Weapons & Ordnance"
+	]
+	
+	# Generate random starting values between 3.0 and 7.0
+	for cat in categories:
+		universe_market_values[cat] = randf_range(3.0, 7.0)
+	
+	# Normalize to ensure total equals 35
+	var total = 0.0
+	for cat in categories:
+		total += universe_market_values[cat]
+	
+	var scale_factor = 35.0 / total
+	for cat in categories:
+		universe_market_values[cat] *= scale_factor
+	
+	print("Universe market initialized: ", universe_market_values)
+
+# NEW: Fluctuate universe market values
+func fluctuate_universe_market():
+	var categories = universe_market_values.keys()
+	
+	# Select 2-3 random categories to change
+	var num_to_change = randi_range(2, 3)
+	var changed_categories = []
+	
+	for i in range(num_to_change):
+		var random_cat = categories[randi() % categories.size()]
+		if not changed_categories.has(random_cat):
+			changed_categories.append(random_cat)
+	
+	# Apply random changes to selected categories
+	var changes = {}
+	for cat in changed_categories:
+		var change = randf_range(-market_fluctuation_amount, market_fluctuation_amount)
+		changes[cat] = change
+	
+	# Apply correlation effects using database relationships
+	for relationship in db_manager.category_relationships:
+		var primary_cat_id = relationship["primary_category_id"]
+		var influenced_cat_id = relationship["influenced_category_id"]
+		var strength = relationship["correlation_strength"]
+		
+		# Convert category IDs to names
+		var primary_cat_name = _get_category_name_by_id(primary_cat_id)
+		var influenced_cat_name = _get_category_name_by_id(influenced_cat_id)
+		
+		# If primary category changed, influence the related category
+		if changes.has(primary_cat_name):
+			var primary_change = changes[primary_cat_name]
+			var influenced_change = primary_change * strength
+			
+			if changes.has(influenced_cat_name):
+				changes[influenced_cat_name] += influenced_change
+			else:
+				changes[influenced_cat_name] = influenced_change
+	
+	# Apply all changes
+	for cat in changes.keys():
+		universe_market_values[cat] += changes[cat]
+	
+	# Normalize to ensure total = 35
+	var total = 0.0
+	for cat in categories:
+		total += universe_market_values[cat]
+	
+	var scale_factor = 35.0 / total
+	for cat in categories:
+		universe_market_values[cat] *= scale_factor
+	
+	print("Market fluctuated: ", universe_market_values)
+	market_values_changed.emit()
+
+# NEW: Helper to get category name by ID
+func _get_category_name_by_id(category_id: int) -> String:
+	for cat in db_manager.all_categories:
+		if cat["category_id"] == category_id:
+			return cat["category_name"]
+	return ""
+
 # ============================================================================
 # STATE MANAGEMENT
 # ============================================================================
@@ -139,7 +238,14 @@ func refresh_market():
 	var system_id = current_player_state.get("current_system_id", 0)
 	var market_type = current_player_state.get("market_type", "infinite")
 	
-	market_buy_items = db_manager.get_market_buy_items(system_id, market_type)
+	# NEW: Pass universe market values, connection discount, AND market modifier strength
+	market_buy_items = db_manager.get_market_buy_items(
+		system_id, 
+		market_type, 
+		universe_market_values, 
+		connected_planet_discount,
+		market_value_per_point
+	)
 	market_sell_prices = db_manager.get_market_sell_prices(system_id)
 	
 	if market_ui:
@@ -150,6 +256,8 @@ func refresh_cargo():
 	
 	if cargo_ui:
 		cargo_ui.update_cargo(player_inventory, market_sell_prices, current_player_state)
+		# NEW: Update market graph
+		cargo_ui.update_market_graph(universe_market_values)
 
 # ============================================================================
 # TRAVEL SYSTEM
@@ -189,6 +297,9 @@ func _on_travel_requested(destination_id: int, distance: int):
 	# Execute travel
 	if db_manager.execute_travel(destination_id, distance, fuel_cost):
 		print("Execute travel: %d ms" % (Time.get_ticks_msec() - t1))
+		
+		# NEW: Fluctuate universe market on each jump
+		fluctuate_universe_market()
 		
 		# For finite markets, handle inventory initialization and regeneration
 		if market_type != "infinite":

@@ -15,6 +15,7 @@ var all_items: Array = []
 var all_systems: Array = []
 var all_categories: Array = []
 var system_connections: Dictionary = {}
+var category_relationships: Array = []  # NEW: Market relationships
 
 func _ready():
 	initialize_database()
@@ -37,6 +38,7 @@ func cache_static_data():
 	all_systems = get_all_systems()
 	all_categories = get_all_categories()
 	system_connections = get_all_connections()
+	category_relationships = get_category_relationships()  # NEW
 	
 	# Emit ready signal
 	database_ready.emit()
@@ -68,6 +70,19 @@ func get_all_items() -> Array:
 
 func get_all_categories() -> Array:
 	db.query("SELECT * FROM categories ORDER BY category_name")
+	return db.query_result
+
+# NEW: Get category market relationships
+func get_category_relationships() -> Array:
+	var query = """
+	SELECT 
+		primary_category_id,
+		influenced_category_id,
+		correlation_strength
+	FROM category_market_relationships
+	"""
+	
+	db.query(query)
 	return db.query_result
 
 # ============================================================================
@@ -136,36 +151,80 @@ func get_connections_from_system(system_id: int) -> Array:
 		return system_connections[system_id]
 	return []
 
+# NEW: Get categories produced by connected systems (1 jump away)
+func get_nearby_produced_categories(system_id: int) -> Array:
+	var connections = get_connections_from_system(system_id)
+	var nearby_categories = []
+	
+	for connection in connections:
+		if connection["distance"] == 1:  # Only 1-jump neighbors
+			var neighbor_id = connection["to_id"]
+			var produced = get_system_produced_categories(neighbor_id)
+			for cat_id in produced:
+				if not nearby_categories.has(cat_id):
+					nearby_categories.append(cat_id)
+	
+	return nearby_categories
+
+# NEW: Get categories that a system produces (negative price modifier = they produce it)
+func get_system_produced_categories(system_id: int) -> Array:
+	var system_info = get_system_by_id(system_id)
+	if system_info.is_empty():
+		return []
+	
+	var planet_type_id = system_info["planet_type_id"]
+	
+	var query = """
+	SELECT category_id
+	FROM planet_category_modifiers
+	WHERE planet_type_id = %d
+	AND price_modifier < 0
+	""" % planet_type_id
+	
+	db.query(query)
+	
+	var categories = []
+	for row in db.query_result:
+		categories.append(row["category_id"])
+	
+	return categories
+
 # ============================================================================
 # QUERY FUNCTIONS - Market Data
 # ============================================================================
 
-func get_market_buy_items(system_id: int, market_type: String = "infinite") -> Array:
+# UPDATED: Now accepts universe market values and connection discount
+func get_market_buy_items(system_id: int, market_type: String = "infinite", universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05) -> Array:
+	var base_items = []
+	
 	if market_type == "infinite":
-		# Use VIEW for infinite markets
+		# Use VIEW for infinite markets - JOIN with categories to get category_id
 		var query = """
 		SELECT 
-			item_id,
-			item_name,
-			category_name,
-			rarity_name,
-			base_price,
-			sell_price,
-			availability_percent,
-			price_category
-		FROM system_market_buy
-		WHERE system_id = %d
-		ORDER BY category_name, rarity_name, item_name
+			smb.item_id,
+			smb.item_name,
+			c.category_id,
+			smb.category_name,
+			smb.rarity_name,
+			smb.base_price,
+			smb.sell_price,
+			smb.availability_percent,
+			smb.price_category
+		FROM system_market_buy smb
+		JOIN categories c ON smb.category_name = c.category_name
+		WHERE smb.system_id = %d
+		ORDER BY smb.category_name, smb.rarity_name, smb.item_name
 		""" % system_id
 		
 		db.query(query)
-		return db.query_result
+		base_items = db.query_result
 	else:
-		# For finite markets, query directly from inventory (much faster)
+		# For finite markets, query directly from inventory
 		var query = """
 		SELECT 
 			i.item_id,
 			i.item_name,
+			i.category_id,
 			c.category_name,
 			r.rarity_name,
 			i.base_price,
@@ -193,7 +252,44 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite") -> A
 		""" % system_id
 		
 		db.query(query)
-		return db.query_result
+		base_items = db.query_result
+	
+	# NEW: Apply universe market modifiers and connection discounts
+	if not universe_market.is_empty():
+		var nearby_categories = get_nearby_produced_categories(system_id)
+		
+		for item in base_items:
+			var category_id = item.get("category_id", 0)
+			var category_name = item.get("category_name", "")
+			var base_sell_price = item.get("sell_price", 0)
+			
+			# Apply universe market modifier (tunable percentage per point to not override planet modifiers)
+			var market_value = universe_market.get(category_name, 5.0)
+			var market_modifier = 1.0 + ((market_value - 5.0) * market_modifier_per_point)
+			
+			# Apply connection discount if this category is produced nearby
+			var connection_modifier = 1.0
+			if nearby_categories.has(category_id):
+				connection_modifier = 1.0 - connected_discount
+			
+			# Calculate final price
+			var final_price = base_sell_price * market_modifier * connection_modifier
+			item["sell_price"] = round(final_price * 100.0) / 100.0  # Round to 2 decimals
+			
+			# Update price category based on final modifier
+			var total_modifier = market_modifier * connection_modifier
+			if total_modifier <= 0.60:
+				item["price_category"] = "Very Low"
+			elif total_modifier <= 0.80:
+				item["price_category"] = "Low"
+			elif total_modifier <= 1.19:
+				item["price_category"] = "Average"
+			elif total_modifier <= 1.49:
+				item["price_category"] = "High"
+			else:
+				item["price_category"] = "Very High"
+	
+	return base_items
 
 func get_market_sell_prices(system_id: int) -> Dictionary:
 	var query = """

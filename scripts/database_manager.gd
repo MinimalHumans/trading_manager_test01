@@ -276,15 +276,17 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 			var final_price = base_sell_price * market_modifier * connection_modifier
 			item["sell_price"] = round(final_price * 100.0) / 100.0  # Round to 2 decimals
 			
-			# Update price category based on final modifier
-			var total_modifier = market_modifier * connection_modifier
-			if total_modifier <= 0.60:
+			# Update price category based on how final price compares to base price
+			var base_price = item.get("base_price", 1.0)
+			var total_price_ratio = final_price / base_price
+			
+			if total_price_ratio <= 0.60:
 				item["price_category"] = "Very Low"
-			elif total_modifier <= 0.80:
+			elif total_price_ratio <= 0.80:
 				item["price_category"] = "Low"
-			elif total_modifier <= 1.19:
+			elif total_price_ratio <= 1.19:
 				item["price_category"] = "Average"
-			elif total_modifier <= 1.49:
+			elif total_price_ratio <= 1.49:
 				item["price_category"] = "High"
 			else:
 				item["price_category"] = "Very High"

@@ -6,9 +6,13 @@ extends Node
 # Signal when database is ready
 signal database_ready
 
-# Database reference
-var db: SQLite
-var db_path: String = "res://data/trading_economy.db"
+# Database references
+var game_db: SQLite  # Read-only reference data
+var save_db: SQLite  # Player save data (volatile)
+
+var game_db_path: String = "res://data/trading_economy.db"
+var save_db_path: String = "user://player_save.db"
+var game_db_absolute_path: String = ""  # Cached absolute path for ATTACH
 
 # Cached data for performance
 var all_items: Array = []
@@ -22,12 +26,22 @@ func _ready():
 
 # Initialize database connection
 func initialize_database() -> bool:
-	db = SQLite.new()
-	db.path = db_path
+	# Open game database (read-only reference data)
+	game_db = SQLite.new()
+	game_db.path = game_db_path
 	
-	if not db.open_db():
-		push_error("Failed to open database at: " + db_path)
+	if not game_db.open_db():
+		push_error("Failed to open game database at: " + game_db_path)
 		return false
+	
+	# Cache the absolute path for ATTACH commands
+	game_db_absolute_path = ProjectSettings.globalize_path(game_db_path)
+	print("Game database opened successfully at: " + game_db_absolute_path)
+	
+	# Save database will be created on new game
+	# For now, just initialize the variable
+	save_db = SQLite.new()
+	save_db.path = save_db_path
 	
 	cache_static_data()
 	return true
@@ -65,12 +79,12 @@ func get_all_items() -> Array:
 	ORDER BY c.category_name, r.rarity_id, i.item_name
 	"""
 	
-	db.query(query)
-	return db.query_result
+	game_db.query(query)
+	return game_db.query_result
 
 func get_all_categories() -> Array:
-	db.query("SELECT * FROM categories ORDER BY category_name")
-	return db.query_result
+	game_db.query("SELECT * FROM categories ORDER BY category_name")
+	return game_db.query_result
 
 # NEW: Get category market relationships
 func get_category_relationships() -> Array:
@@ -82,8 +96,8 @@ func get_category_relationships() -> Array:
 	FROM category_market_relationships
 	"""
 	
-	db.query(query)
-	return db.query_result
+	game_db.query(query)
+	return game_db.query_result
 
 # ============================================================================
 # QUERY FUNCTIONS - Systems and Connections
@@ -102,8 +116,8 @@ func get_all_systems() -> Array:
 	ORDER BY s.system_name
 	"""
 	
-	db.query(query)
-	return db.query_result
+	game_db.query(query)
+	return game_db.query_result
 
 func get_system_by_id(system_id: int) -> Dictionary:
 	var query = """
@@ -118,9 +132,9 @@ func get_system_by_id(system_id: int) -> Dictionary:
 	WHERE s.system_id = %d
 	""" % system_id
 	
-	db.query(query)
-	if db.query_result.size() > 0:
-		return db.query_result[0]
+	game_db.query(query)
+	if game_db.query_result.size() > 0:
+		return game_db.query_result[0]
 	return {}
 
 func get_all_connections() -> Dictionary:
@@ -132,10 +146,10 @@ func get_all_connections() -> Dictionary:
 	FROM system_connections_bidirectional
 	"""
 	
-	db.query(query)
+	game_db.query(query)
 	var connections = {}
 	
-	for row in db.query_result:
+	for row in game_db.query_result:
 		var from_id = row["system_a_id"]
 		if not connections.has(from_id):
 			connections[from_id] = []
@@ -181,10 +195,10 @@ func get_system_produced_categories(system_id: int) -> Array:
 	AND price_modifier < 0
 	""" % planet_type_id
 	
-	db.query(query)
+	game_db.query(query)
 	
 	var categories = []
-	for row in db.query_result:
+	for row in game_db.query_result:
 		categories.append(row["category_id"])
 	
 	return categories
@@ -216,11 +230,21 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 		ORDER BY smb.category_name, smb.rarity_name, smb.item_name
 		""" % system_id
 		
-		db.query(query)
-		base_items = db.query_result
+		game_db.query(query)
+		base_items = game_db.query_result
 	else:
-		# For finite markets, query directly from inventory
-		var query = """
+		# For finite markets, query directly from inventory (save_db) with JOIN to game_db
+		if not save_db or not save_db.query("SELECT 1"):
+			push_error("Save database not available for finite market query")
+			return []
+		
+		# Attach game database to save database for cross-database query
+		var attach_query = "ATTACH DATABASE '%s' AS game_db" % game_db_absolute_path
+		if not save_db.query(attach_query):
+			push_error("Failed to attach game database for finite market query")
+			return []
+		
+		var finite_query = """
 		SELECT 
 			i.item_id,
 			i.item_name,
@@ -239,11 +263,11 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 				ELSE 'Very High'
 			END as price_category
 		FROM system_inventory si
-		JOIN items i ON si.item_id = i.item_id
-		JOIN categories c ON i.category_id = c.category_id
-		JOIN rarity_tiers r ON i.rarity_id = r.rarity_id
-		JOIN systems s ON si.system_id = s.system_id
-		LEFT JOIN planet_category_modifiers pcm ON 
+		JOIN game_db.items i ON si.item_id = i.item_id
+		JOIN game_db.categories c ON i.category_id = c.category_id
+		JOIN game_db.rarity_tiers r ON i.rarity_id = r.rarity_id
+		JOIN game_db.systems s ON si.system_id = s.system_id
+		LEFT JOIN game_db.planet_category_modifiers pcm ON 
 			s.planet_type_id = pcm.planet_type_id AND
 			i.category_id = pcm.category_id AND
 			pcm.price_modifier < 0
@@ -251,8 +275,11 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 		ORDER BY c.category_name, r.rarity_name, i.item_name
 		""" % system_id
 		
-		db.query(query)
-		base_items = db.query_result
+		save_db.query(finite_query)
+		base_items = save_db.query_result
+		
+		# Detach game database
+		save_db.query("DETACH DATABASE game_db")
 	
 	# NEW: Apply universe market modifiers and connection discounts
 	if not universe_market.is_empty():
@@ -305,11 +332,11 @@ func get_market_sell_prices(system_id: int) -> Dictionary:
 	WHERE system_id = %d
 	""" % system_id
 	
-	db.query(query)
+	game_db.query(query)
 	
 	# Convert to dictionary for easy lookup
 	var prices = {}
-	for row in db.query_result:
+	for row in game_db.query_result:
 		prices[row["item_id"]] = row
 	
 	return prices
@@ -324,6 +351,10 @@ func initialize_system_inventory(market_type: String):
 
 func verify_inventory_integrity() -> Dictionary:
 	"""Debug function to check inventory state"""
+	if not save_db or not save_db.query("SELECT 1"):
+		print("Save database not available")
+		return {}
+	
 	var query = """
 	SELECT 
 		system_id,
@@ -333,10 +364,10 @@ func verify_inventory_integrity() -> Dictionary:
 	GROUP BY system_id
 	"""
 	
-	db.query(query)
+	save_db.query(query)
 	
 	var results = {}
-	for row in db.query_result:
+	for row in save_db.query_result:
 		results[row["system_id"]] = {
 			"items": row["item_count"],
 			"with_stock": row["items_with_stock"]
@@ -352,16 +383,19 @@ func verify_inventory_integrity() -> Dictionary:
 
 func has_inventory_for_system(system_id: int) -> bool:
 	"""Check if a system has inventory initialized"""
+	if not save_db or not save_db.query("SELECT 1"):
+		return false
+	
 	var query = """
 	SELECT COUNT(*) as count
 	FROM system_inventory
 	WHERE system_id = %d
 	""" % system_id
 	
-	db.query(query)
+	save_db.query(query)
 	
-	if db.query_result.size() > 0:
-		return db.query_result[0]["count"] > 0
+	if save_db.query_result.size() > 0:
+		return save_db.query_result[0]["count"] > 0
 	
 	return false
 
@@ -372,7 +406,7 @@ func initialize_system_inventory_lazy(system_id: int):
 	if has_inventory_for_system(system_id):
 		return
 	
-	# Get all items available at this system
+	# Get all items available at this system from game database
 	var market_items = get_market_buy_items(system_id, "infinite")
 	
 	if market_items.size() == 0:
@@ -380,7 +414,7 @@ func initialize_system_inventory_lazy(system_id: int):
 		return
 	
 	# Use transaction for MUCH faster batch inserts
-	db.query("BEGIN TRANSACTION")
+	save_db.query("BEGIN TRANSACTION")
 	
 	# Insert items one by one (but within transaction)
 	for item in market_items:
@@ -394,23 +428,26 @@ func initialize_system_inventory_lazy(system_id: int):
 		VALUES (%d, %d, %f, %f, 0)
 		""" % [system_id, item_id, current_stock, max_stock]
 		
-		db.query(insert_query)
+		save_db.query(insert_query)
 	
 	# Commit all at once
-	db.query("COMMIT")
+	save_db.query("COMMIT")
 
 func get_item_stock(system_id: int, item_id: int) -> Dictionary:
 	"""Get current stock info for an item at a system"""
+	if not save_db or not save_db.query("SELECT 1"):
+		return {"current_stock_tons": 0, "max_stock_tons": 0, "last_updated_jump": 0}
+	
 	var query = """
 	SELECT current_stock_tons, max_stock_tons, last_updated_jump
 	FROM system_inventory
 	WHERE system_id = %d AND item_id = %d
 	""" % [system_id, item_id]
 	
-	db.query(query)
+	save_db.query(query)
 	
-	if db.query_result.size() > 0:
-		return db.query_result[0]
+	if save_db.query_result.size() > 0:
+		return save_db.query_result[0]
 	
 	return {"current_stock_tons": 0, "max_stock_tons": 0, "last_updated_jump": 0}
 
@@ -423,13 +460,13 @@ func update_item_stock(system_id: int, item_id: int, quantity_change: float) -> 
 	WHERE system_id = %d AND item_id = %d
 	""" % [system_id, item_id]
 	
-	db.query(check_query)
+	save_db.query(check_query)
 	
-	if db.query_result.size() == 0:
+	if save_db.query_result.size() == 0:
 		push_error("No inventory record for system %d, item %d" % [system_id, item_id])
 		return false
 	
-	var current = db.query_result[0]["current_stock_tons"]
+	var current = save_db.query_result[0]["current_stock_tons"]
 	var new_stock = current + quantity_change
 	
 	if new_stock < 0:
@@ -442,7 +479,7 @@ func update_item_stock(system_id: int, item_id: int, quantity_change: float) -> 
 	WHERE system_id = %d AND item_id = %d
 	""" % [new_stock, system_id, item_id]
 	
-	return db.query(query)
+	return save_db.query(query)
 
 func regenerate_system_stock_instant(system_id: int):
 	"""Instantly refill all stock at a system (for finite-instant mode)"""
@@ -455,7 +492,7 @@ func regenerate_system_stock_instant(system_id: int):
 	WHERE system_id = %d
 	""" % system_id
 	
-	db.query(query)
+	save_db.query(query)
 
 func regenerate_system_stock_turnbased(system_id: int, current_jump: int):
 	"""Regenerate stock based on jumps since last update (15% per jump)"""
@@ -476,18 +513,66 @@ func regenerate_system_stock_turnbased(system_id: int, current_jump: int):
 		AND current_stock_tons < max_stock_tons
 	""" % [current_jump, current_jump, system_id, current_jump]
 	
-	db.query(query)
+	save_db.query(query)
 
 # ============================================================================
 # QUERY FUNCTIONS - Player State
 # ============================================================================
 
 func initialize_new_game(config: Dictionary) -> bool:
-	# Clear existing game
-	db.query("DELETE FROM player_inventory WHERE player_id = 1")
-	db.query("DELETE FROM player_state WHERE player_id = 1")
+	# Create fresh save database
+	if save_db.path and FileAccess.file_exists(save_db.path):
+		DirAccess.remove_absolute(save_db.path)
+		print("Deleted old save database")
 	
-	# Create new game state
+	if not save_db.open_db():
+		push_error("Failed to create save database at: " + save_db_path)
+		return false
+	
+	print("Save database opened at: " + ProjectSettings.globalize_path(save_db_path))
+	
+	# Create save database schema
+	var schema_queries = [
+		"""CREATE TABLE player_state (
+			player_id INTEGER PRIMARY KEY DEFAULT 1,
+			current_system_id INTEGER NOT NULL,
+			credits REAL NOT NULL,
+			cargo_capacity_tons INTEGER NOT NULL,
+			base_fuel_cost REAL NOT NULL,
+			win_goal REAL NOT NULL,
+			total_jumps INTEGER DEFAULT 0,
+			game_start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			market_type TEXT DEFAULT 'infinite' CHECK (market_type IN ('infinite', 'finite_instant', 'finite_turn'))
+		)""",
+		"""CREATE TABLE player_inventory (
+			player_id INTEGER DEFAULT 1,
+			item_id INTEGER NOT NULL,
+			quantity_tons REAL NOT NULL,
+			PRIMARY KEY (player_id, item_id),
+			CHECK (quantity_tons > 0)
+		)""",
+		"""CREATE TABLE system_inventory (
+			system_id INTEGER NOT NULL,
+			item_id INTEGER NOT NULL,
+			current_stock_tons REAL NOT NULL DEFAULT 0,
+			max_stock_tons REAL NOT NULL DEFAULT 100,
+			last_updated_jump INTEGER DEFAULT 0,
+			PRIMARY KEY (system_id, item_id),
+			CHECK (current_stock_tons >= 0),
+			CHECK (current_stock_tons <= max_stock_tons)
+		)""",
+		"CREATE INDEX idx_system_inventory ON system_inventory(system_id, item_id)",
+		"CREATE INDEX idx_player_inv_item ON player_inventory(item_id)"
+	]
+	
+	for i in range(schema_queries.size()):
+		if not save_db.query(schema_queries[i]):
+			push_error("Failed to create save database schema at step %d" % i)
+			return false
+	
+	print("Save database schema created successfully")
+	
+	# Insert initial player state
 	var query = """
 	INSERT INTO player_state 
 	(player_id, current_system_id, credits, cargo_capacity_tons, base_fuel_cost, win_goal, total_jumps, market_type)
@@ -501,15 +586,80 @@ func initialize_new_game(config: Dictionary) -> bool:
 		config["market_type"]
 	]
 	
-	return db.query(query)
+	if not save_db.query(query):
+		push_error("Failed to insert initial player state")
+		return false
+	
+	print("Initial player state created: System %d, Credits %f" % [config["starting_system"], config["starting_credits"]])
+	
+	# Verify the insert worked
+	save_db.query("SELECT * FROM player_state WHERE player_id = 1")
+	if save_db.query_result.size() == 0:
+		push_error("Player state insert verification failed!")
+		return false
+	
+	print("Player state verified in database")
+	return true
 
 func get_player_state() -> Dictionary:
-	db.query("SELECT * FROM player_status WHERE player_id = 1")
-	if db.query_result.size() > 0:
-		return db.query_result[0]
-	return {}
+	if not save_db or not save_db.query("SELECT 1"):
+		push_error("Save database not open in get_player_state()")
+		return {}
+	
+	# Attach game database for the view query
+	var attach_query = "ATTACH DATABASE '%s' AS game_db" % game_db_absolute_path
+	if not save_db.query(attach_query):
+		push_error("Failed to attach game database in get_player_state()")
+		return {}
+	
+	# Use a query that joins with game database
+	var query = """
+	SELECT 
+		ps.player_id,
+		ps.credits,
+		ps.cargo_capacity_tons,
+		ps.total_jumps,
+		ps.win_goal,
+		ps.base_fuel_cost,
+		ps.market_type,
+		COALESCE(SUM(pi.quantity_tons), 0) AS cargo_used_tons,
+		ps.cargo_capacity_tons - COALESCE(SUM(pi.quantity_tons), 0) AS cargo_free_tons,
+		ROUND((COALESCE(SUM(pi.quantity_tons), 0) / ps.cargo_capacity_tons) * 100, 1) AS cargo_percent_full,
+		ps.current_system_id,
+		s.system_name AS current_system_name,
+		pt.planet_type_name AS current_planet_type
+	FROM player_state ps
+	JOIN game_db.systems s ON ps.current_system_id = s.system_id
+	JOIN game_db.planet_types pt ON s.planet_type_id = pt.planet_type_id
+	LEFT JOIN player_inventory pi ON ps.player_id = pi.player_id
+	WHERE ps.player_id = 1
+	GROUP BY ps.player_id
+	"""
+	
+	if not save_db.query(query):
+		push_error("Failed to query player state")
+		save_db.query("DETACH DATABASE game_db")
+		return {}
+	
+	var result = {}
+	if save_db.query_result.size() > 0:
+		result = save_db.query_result[0]
+	
+	# Detach game database
+	save_db.query("DETACH DATABASE game_db")
+	
+	return result
 
 func get_player_inventory() -> Array:
+	if not save_db or not save_db.query("SELECT 1"):
+		return []
+	
+	# Attach game database for JOIN
+	var attach_query = "ATTACH DATABASE '%s' AS game_db" % game_db_absolute_path
+	if not save_db.query(attach_query):
+		push_error("Failed to attach game database in get_player_inventory()")
+		return []
+	
 	var query = """
 	SELECT 
 		pi.item_id,
@@ -517,14 +667,19 @@ func get_player_inventory() -> Array:
 		c.category_name,
 		pi.quantity_tons
 	FROM player_inventory pi
-	JOIN items i ON pi.item_id = i.item_id
-	JOIN categories c ON i.category_id = c.category_id
+	JOIN game_db.items i ON pi.item_id = i.item_id
+	JOIN game_db.categories c ON i.category_id = c.category_id
 	WHERE pi.player_id = 1
 	ORDER BY i.item_name
 	"""
 	
-	db.query(query)
-	return db.query_result
+	save_db.query(query)
+	var result = save_db.query_result
+	
+	# Detach game database
+	save_db.query("DETACH DATABASE game_db")
+	
+	return result
 
 # ============================================================================
 # TRANSACTION FUNCTIONS
@@ -540,11 +695,11 @@ func execute_travel(destination_system_id: int, jump_distance: int, fuel_cost: f
 	WHERE player_id = 1
 	""" % [destination_system_id, fuel_cost, jump_distance]
 	
-	return db.query(query)
+	return save_db.query(query)
 
 func execute_purchase(item_id: int, quantity: float, total_cost: float, system_id: int = -1, market_type: String = "infinite") -> bool:
 	# Use transaction for atomic operations
-	db.query("BEGIN TRANSACTION")
+	save_db.query("BEGIN TRANSACTION")
 	
 	# Deduct credits
 	var update_credits = """
@@ -553,23 +708,23 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 	WHERE player_id = 1
 	""" % total_cost
 	
-	if not db.query(update_credits):
-		db.query("ROLLBACK")
+	if not save_db.query(update_credits):
+		save_db.query("ROLLBACK")
 		return false
 	
 	# For finite markets, deduct from system stock
 	if market_type != "infinite" and system_id > 0:
 		if not update_item_stock(system_id, item_id, -quantity):
-			db.query("ROLLBACK")
+			save_db.query("ROLLBACK")
 			return false
 	
 	# Check if item already in inventory
 	var check_query = "SELECT quantity_tons FROM player_inventory WHERE player_id = 1 AND item_id = %d" % item_id
-	db.query(check_query)
+	save_db.query(check_query)
 	
-	if db.query_result.size() > 0:
+	if save_db.query_result.size() > 0:
 		# Update existing
-		var current_qty = db.query_result[0]["quantity_tons"]
+		var current_qty = save_db.query_result[0]["quantity_tons"]
 		var new_qty = current_qty + quantity
 		var update_inventory = """
 		UPDATE player_inventory 
@@ -577,8 +732,8 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 		WHERE player_id = 1 AND item_id = %d
 		""" % [new_qty, item_id]
 		
-		if not db.query(update_inventory):
-			db.query("ROLLBACK")
+		if not save_db.query(update_inventory):
+			save_db.query("ROLLBACK")
 			return false
 	else:
 		# Insert new
@@ -587,11 +742,11 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 		VALUES (1, %d, %f)
 		""" % [item_id, quantity]
 		
-		if not db.query(insert_inventory):
-			db.query("ROLLBACK")
+		if not save_db.query(insert_inventory):
+			save_db.query("ROLLBACK")
 			return false
 	
-	db.query("COMMIT")
+	save_db.query("COMMIT")
 	return true
 
 func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
@@ -602,17 +757,17 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
 	WHERE player_id = 1
 	""" % total_revenue
 	
-	if not db.query(update_credits):
+	if not save_db.query(update_credits):
 		return false
 	
 	# Get current quantity
 	var check_query = "SELECT quantity_tons FROM player_inventory WHERE player_id = 1 AND item_id = %d" % item_id
-	db.query(check_query)
+	save_db.query(check_query)
 	
-	if db.query_result.size() == 0:
+	if save_db.query_result.size() == 0:
 		return false
 	
-	var current_qty = db.query_result[0]["quantity_tons"]
+	var current_qty = save_db.query_result[0]["quantity_tons"]
 	var new_qty = current_qty - quantity
 	
 	if new_qty <= 0.01:
@@ -622,7 +777,7 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
 		WHERE player_id = 1 AND item_id = %d
 		""" % item_id
 		
-		if not db.query(delete_query):
+		if not save_db.query(delete_query):
 			return false
 	else:
 		# Update quantity
@@ -632,7 +787,7 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
 		WHERE player_id = 1 AND item_id = %d
 		""" % [new_qty, item_id]
 		
-		if not db.query(update_inventory):
+		if not save_db.query(update_inventory):
 			return false
 	
 	return true
@@ -718,6 +873,9 @@ func _format_number_with_commas(number: int) -> String:
 	return result
 
 func close_database():
-	if db:
-		db.close_db()
-		print("Database closed")
+	if game_db:
+		game_db.close_db()
+		print("Game database closed")
+	if save_db:
+		save_db.close_db()
+		print("Save database closed")

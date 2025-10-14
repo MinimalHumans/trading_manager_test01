@@ -88,11 +88,8 @@ func _on_start_game(config: Dictionary):
 	
 	var market_type = current_player_state.get("market_type", "infinite")
 	
-	# For finite markets, clear any old inventory data
-	if market_type != "infinite":
-		var t2 = Time.get_ticks_msec()
-		db_manager.db.query("DELETE FROM system_inventory")
-		print("Clear inventory: %d ms" % (Time.get_ticks_msec() - t2))
+	# Note: Save database is already fresh from initialize_new_game()
+	# No need to clear inventory - it's created clean
 	
 	# Hide new game panel, show game panel
 	new_game_panel.visible = false

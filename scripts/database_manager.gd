@@ -768,7 +768,7 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 	save_db.query("COMMIT")
 	return true
 
-func execute_sale(item_id: int, quantity: float, total_revenue: float, system_id: int = -1, market_type: String = "infinite") -> bool:
+func execute_sale(item_id: int, quantity: float, total_revenue: float) -> bool:
 	# Add credits
 	var update_credits = """
 	UPDATE player_state 
@@ -778,12 +778,6 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float, system_id
 	
 	if not save_db.query(update_credits):
 		return false
-	
-	# For finite markets, add items back to system inventory
-	if market_type != "infinite" and system_id > 0:
-		if not update_item_stock(system_id, item_id, quantity):
-			push_error("Failed to add items back to system inventory")
-			# Don't fail the transaction, just warn
 	
 	# Get current quantity
 	var check_query = "SELECT quantity_tons FROM player_inventory WHERE player_id = 1 AND item_id = %d" % item_id

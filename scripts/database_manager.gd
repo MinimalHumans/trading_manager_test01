@@ -19,7 +19,8 @@ var all_items: Array = []
 var all_systems: Array = []
 var all_categories: Array = []
 var system_connections: Dictionary = {}
-var category_relationships: Array = []  # NEW: Market relationships
+var category_relationships: Array = []  # Market relationships
+var market_events: Array = []  # NEW: All possible events
 
 func _ready():
 	initialize_database()
@@ -52,7 +53,8 @@ func cache_static_data():
 	all_systems = get_all_systems()
 	all_categories = get_all_categories()
 	system_connections = get_all_connections()
-	category_relationships = get_category_relationships()  # NEW
+	category_relationships = get_category_relationships()
+	market_events = get_all_market_events()  # NEW
 	
 	# Emit ready signal
 	database_ready.emit()
@@ -94,6 +96,23 @@ func get_category_relationships() -> Array:
 		influenced_category_id,
 		correlation_strength
 	FROM category_market_relationships
+	"""
+	
+	game_db.query(query)
+	return game_db.query_result
+
+# NEW: Get all market events
+func get_all_market_events() -> Array:
+	var query = """
+	SELECT 
+		event_id,
+		event_text,
+		category_name,
+		impact_type,
+		magnitude_min,
+		magnitude_max
+	FROM market_events
+	ORDER BY category_name, event_id
 	"""
 	
 	game_db.query(query)

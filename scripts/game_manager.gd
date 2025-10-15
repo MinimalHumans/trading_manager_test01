@@ -25,6 +25,13 @@ var market_fluctuation_amount: float = 0.3  # Tunable: how much market changes p
 var connected_planet_discount: float = 0.10  # Tunable: discount for goods from 1-jump neighbors
 var market_value_per_point: float = 0.05  # Tunable: price change per market point (5% = balanced with planet modifiers)
 
+# NEW: Event system
+var current_event: Dictionary = {}  # Active event or empty if none
+var last_event_jump: int = -999  # Jump when last event occurred
+var event_trigger_chance: float = 0.2  # 4% chance per jump
+var event_cooldown_jumps: int = 5  # Minimum jumps between events
+var event_decay_rate: float = 0.25  # How much event fades per jump
+
 # Signals
 signal game_started
 signal player_state_changed
@@ -149,6 +156,138 @@ func initialize_universe_market():
 		universe_market_values[cat] *= scale_factor
 	
 	print("Universe market initialized: ", universe_market_values)
+
+# NEW: Check if a market event should trigger
+func check_for_event_trigger():
+	var current_jumps = current_player_state.get("total_jumps", 0)
+	
+	# Don't trigger events in first 5 jumps or within cooldown period
+	if current_jumps < 5:
+		return
+	
+	var jumps_since_last_event = current_jumps - last_event_jump
+	if jumps_since_last_event < event_cooldown_jumps:
+		return
+	
+	# If event is active and hasn't fully decayed, decay it
+	if not current_event.is_empty():
+		decay_active_event()
+		return
+	
+	# Random chance to trigger new event
+	if randf() < event_trigger_chance:
+		trigger_market_event()
+
+# NEW: Trigger a random market event
+func trigger_market_event():
+	if db_manager.market_events.is_empty():
+		return
+	
+	# Select random event
+	var random_event = db_manager.market_events[randi() % db_manager.market_events.size()]
+	
+	# Calculate magnitude within range
+	var magnitude = randf_range(random_event["magnitude_min"], random_event["magnitude_max"])
+	
+	# Store event details
+	current_event = {
+		"text": random_event["event_text"],
+		"category": random_event["category_name"],
+		"impact_type": random_event["impact_type"],
+		"magnitude": magnitude,
+		"remaining_strength": magnitude  # Will decay over time
+	}
+	
+	last_event_jump = current_player_state.get("total_jumps", 0)
+	
+	# Apply event to market
+	apply_event_to_market()
+	
+	# Show popup to player
+	show_event_popup(current_event["text"])
+	
+	print("Market event triggered: %s affects %s by %f" % [current_event["impact_type"], current_event["category"], magnitude])
+
+# NEW: Apply event impact to market values
+func apply_event_to_market():
+	if current_event.is_empty():
+		return
+	
+	var category = current_event["category"]
+	var impact_type = current_event["impact_type"]
+	var strength = current_event["remaining_strength"]
+	
+	# Apply impact based on type
+	if impact_type == "spike":
+		# Increase this category value
+		universe_market_values[category] += strength
+	elif impact_type == "crash":
+		# Decrease this category value
+		universe_market_values[category] -= strength
+	
+	# Normalize to maintain total of 35
+	var categories = universe_market_values.keys()
+	var total = 0.0
+	for cat in categories:
+		total += universe_market_values[cat]
+	
+	var scale_factor = 35.0 / total
+	for cat in categories:
+		universe_market_values[cat] *= scale_factor
+	
+	print("Market after event: ", universe_market_values)
+	market_values_changed.emit()
+
+# NEW: Decay active event over time
+func decay_active_event():
+	if current_event.is_empty():
+		return
+	
+	# Reduce event strength
+	current_event["remaining_strength"] -= event_decay_rate
+	
+	# If event has fully decayed, clear it
+	if current_event["remaining_strength"] <= 0:
+		print("Market event has fully decayed")
+		current_event = {}
+		return
+	
+	# Reapply with reduced strength
+	# First, reverse the previous impact
+	var category = current_event["category"]
+	var impact_type = current_event["impact_type"]
+	var old_strength = current_event["remaining_strength"] + event_decay_rate
+	
+	if impact_type == "spike":
+		universe_market_values[category] -= old_strength
+	elif impact_type == "crash":
+		universe_market_values[category] += old_strength
+	
+	# Apply new (decayed) impact
+	apply_event_to_market()
+	
+	print("Event decaying: %s remaining strength = %f" % [current_event["category"], current_event["remaining_strength"]])
+
+# NEW: Show event popup to player
+func show_event_popup(event_text: String):
+	var dialog = AcceptDialog.new()
+	add_child(dialog)
+	dialog.dialog_text = event_text
+	dialog.title = "BREAKING NEWS"
+	dialog.initial_position = Window.WINDOW_INITIAL_POSITION_CENTER_MAIN_WINDOW_SCREEN
+	
+	# Style it to look like a news alert
+	dialog.min_size = Vector2(500, 200)
+	
+	dialog.confirmed.connect(func():
+		dialog.queue_free()
+	)
+	
+	dialog.close_requested.connect(func():
+		dialog.queue_free()
+	)
+	
+	dialog.popup_centered()
 
 # NEW: Fluctuate universe market values
 func fluctuate_universe_market():
@@ -297,6 +436,9 @@ func _on_travel_requested(destination_id: int, distance: int):
 		
 		# NEW: Fluctuate universe market on each jump
 		fluctuate_universe_market()
+		
+		# NEW: Check for random market event
+		check_for_event_trigger()
 		
 		# For finite markets, handle inventory initialization and regeneration
 		if market_type != "infinite":

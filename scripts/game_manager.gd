@@ -24,11 +24,12 @@ var universe_market_values: Dictionary = {}
 var market_fluctuation_amount: float = 0.3  # Tunable: how much market changes per jump
 var connected_planet_discount: float = 0.10  # Tunable: discount for goods from 1-jump neighbors
 var market_value_per_point: float = 0.05  # Tunable: price change per market point (5% = balanced with planet modifiers)
+var trade_hub_market_multiplier: float = 4.0  # Tunable: Trade Hubs are 4x more sensitive to universe market (20% per point instead of 5%)
 
 # NEW: Event system
 var current_event: Dictionary = {}  # Active event or empty if none
 var last_event_jump: int = -999  # Jump when last event occurred
-var event_trigger_chance: float = 0.2  # 4% chance per jump
+var event_trigger_chance: float = 0.04  # 4% chance per jump
 var event_cooldown_jumps: int = 5  # Minimum jumps between events
 var event_decay_rate: float = 0.25  # How much event fades per jump
 
@@ -374,13 +375,14 @@ func refresh_market():
 	var system_id = current_player_state.get("current_system_id", 0)
 	var market_type = current_player_state.get("market_type", "infinite")
 	
-	# NEW: Pass universe market values, connection discount, AND market modifier strength
+	# NEW: Pass universe market values, connection discount, market modifier strength, AND trade hub multiplier
 	market_buy_items = db_manager.get_market_buy_items(
 		system_id, 
 		market_type, 
 		universe_market_values, 
 		connected_planet_discount,
-		market_value_per_point
+		market_value_per_point,
+		trade_hub_market_multiplier
 	)
 	market_sell_prices = db_manager.get_market_sell_prices(system_id)
 	

@@ -227,7 +227,7 @@ func get_system_produced_categories(system_id: int) -> Array:
 # ============================================================================
 
 # UPDATED: Now accepts universe market values and connection discount
-func get_market_buy_items(system_id: int, market_type: String = "infinite", universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05, trade_hub_multiplier: float = 4.0) -> Array:
+func get_market_buy_items(system_id: int, market_type: String = "infinite", universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05) -> Array:
 	var base_items = []
 	
 	if market_type == "infinite":
@@ -276,10 +276,8 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 			si.max_stock_tons as max_stock,
 			CASE 
 				WHEN COALESCE(pcm.price_modifier, 0) <= -0.40 THEN 'Very Low'
-				WHEN COALESCE(pcm.price_modifier, 0) <= -0.25 THEN 'Low'
-				WHEN COALESCE(pcm.price_modifier, 0) <= -0.10 THEN 'Below Average'
-				WHEN COALESCE(pcm.price_modifier, 0) <= 0.10 THEN 'Average'
-				WHEN COALESCE(pcm.price_modifier, 0) <= 0.25 THEN 'Above Average'
+				WHEN COALESCE(pcm.price_modifier, 0) <= -0.20 THEN 'Low'
+				WHEN COALESCE(pcm.price_modifier, 0) <= 0.19 THEN 'Average'
 				WHEN COALESCE(pcm.price_modifier, 0) <= 0.49 THEN 'High'
 				ELSE 'Very High'
 			END as price_category
@@ -306,21 +304,14 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 	if not universe_market.is_empty():
 		var nearby_categories = get_nearby_produced_categories(system_id)
 		
-		# Check if this is a Trade Hub for stronger market influence
-		var system_info = get_system_by_id(system_id)
-		var is_trade_hub = system_info.get("planet_type_name", "") == "Trade Hub"
-		var effective_market_modifier = market_modifier_per_point
-		if is_trade_hub:
-			effective_market_modifier *= trade_hub_multiplier
-		
 		for item in base_items:
 			var category_id = item.get("category_id", 0)
 			var category_name = item.get("category_name", "")
 			var base_sell_price = item.get("sell_price", 0)
 			
-			# Apply universe market modifier (stronger for Trade Hubs)
+			# Apply universe market modifier (tunable percentage per point to not override planet modifiers)
 			var market_value = universe_market.get(category_name, 5.0)
-			var market_modifier = 1.0 + ((market_value - 5.0) * effective_market_modifier)
+			var market_modifier = 1.0 + ((market_value - 5.0) * market_modifier_per_point)
 			
 			# Apply connection discount if this category is produced nearby
 			var connection_modifier = 1.0
@@ -337,15 +328,11 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 			
 			if total_price_ratio <= 0.60:
 				item["price_category"] = "Very Low"
-			elif total_price_ratio <= 0.75:
+			elif total_price_ratio <= 0.80:
 				item["price_category"] = "Low"
-			elif total_price_ratio <= 0.90:
-				item["price_category"] = "Below Average"
-			elif total_price_ratio <= 1.10:
+			elif total_price_ratio <= 1.19:
 				item["price_category"] = "Average"
-			elif total_price_ratio <= 1.25:
-				item["price_category"] = "Above Average"
-			elif total_price_ratio <= 1.50:
+			elif total_price_ratio <= 1.49:
 				item["price_category"] = "High"
 			else:
 				item["price_category"] = "Very High"
@@ -840,12 +827,8 @@ func get_price_color(price_category: String) -> Color:
 			return Color(0.0, 1.0, 0.0)  # Bright green
 		"Low":
 			return Color(0.56, 0.93, 0.56)  # Light green
-		"Below Average":
-			return Color(0.85, 0.95, 0.65)  # Yellow-green
 		"Average":
 			return Color(1.0, 1.0, 1.0)  # White
-		"Above Average":
-			return Color(1.0, 0.90, 0.60)  # Pale orange-yellow
 		"High":
 			return Color(1.0, 0.65, 0.0)  # Orange
 		"Very High":

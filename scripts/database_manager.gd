@@ -378,29 +378,6 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 	
 	return base_items
 
-func get_market_sell_prices(system_id: int, universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05, player_inventory: Array = []) -> Dictionary:
-	# Get the current buy prices at this system
-	var buy_items = get_market_buy_items(system_id, "infinite", universe_market, connected_discount, market_modifier_per_point)
-	
-	# Create sell prices: player receives 95% of current buy price
-	var prices = {}
-	
-	for item in buy_items:
-		var item_id = item["item_id"]
-		var current_buy_price = item["sell_price"]
-		var sell_back_price = current_buy_price * 0.95
-		
-		prices[item_id] = {
-			"item_id": item_id,
-			"item_name": item["item_name"],
-			"buy_price": round(sell_back_price * 100.0) / 100.0,
-			"will_buy": 1,
-			"category_name": item.get("category_name", ""),
-			"price_category": "Average"
-		}
-	
-	return prices
-
 # ============================================================================
 # SYSTEM INVENTORY FUNCTIONS (Finite Markets)
 # ============================================================================
@@ -527,26 +504,6 @@ func get_total_available_stock(system_id: int, item_id: int) -> float:
 		total += save_db.query_result[0]["quantity_tons"]
 	
 	return total
-
-func get_market_sell_prices_from_items(market_buy_items: Array) -> Dictionary:
-	"""Calculate sell prices directly from the buy items array (95% of displayed buy price)"""
-	var prices = {}
-	
-	for item in market_buy_items:
-		var item_id = item["item_id"]
-		var current_buy_price = item["sell_price"]  # What player would pay to buy now
-		var sell_back_price = current_buy_price * 0.95  # What player receives selling back
-		
-		prices[item_id] = {
-			"item_id": item_id,
-			"item_name": item["item_name"],
-			"buy_price": round(sell_back_price * 100.0) / 100.0,
-			"will_buy": 1,
-			"category_name": item.get("category_name", ""),
-			"price_category": "Average"
-		}
-	
-	return prices
 
 func update_item_stock(system_id: int, item_id: int, quantity_change: float) -> bool:
 	var check_query = """
@@ -717,6 +674,66 @@ func remove_from_player_sold_market(system_id: int, item_id: int, quantity: floa
 		""" % [new_qty, system_id, item_id]
 		
 		return save_db.query(update_query)
+
+func get_market_sell_prices(system_id: int, universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05) -> Dictionary:
+	"""Get what the system is willing to buy (based on system_market_sell view) with 95% pricing"""
+	
+	# Get items this system wants to buy (from database view)
+	var query = """
+	SELECT 
+		item_id,
+		item_name,
+		buy_price,
+		price_category,
+		will_buy
+	FROM system_market_sell
+	WHERE system_id = %d
+	""" % system_id
+	
+	game_db.query(query)
+	
+	# For each item the system buys, calculate 95% of current market buy price
+	var prices = {}
+	
+	for row in game_db.query_result:
+		var item_id = row["item_id"]
+		
+		# Get the current buy price for this item at this system
+		var base_buy_price = row["buy_price"]
+		
+		# Apply universe market modifiers if available
+		if not universe_market.is_empty():
+			# We need category info - query it
+			var cat_query = """
+			SELECT c.category_id, c.category_name
+			FROM items i
+			JOIN categories c ON i.category_id = c.category_id
+			WHERE i.item_id = %d
+			""" % item_id
+			
+			game_db.query(cat_query)
+			
+			if game_db.query_result.size() > 0:
+				var category_name = game_db.query_result[0]["category_name"]
+				var category_id = game_db.query_result[0]["category_id"]
+				
+				var nearby_categories = get_nearby_produced_categories(system_id)
+				var market_value = universe_market.get(category_name, 5.0)
+				var market_modifier = 1.0 + ((market_value - 5.0) * market_modifier_per_point)
+				
+				var connection_modifier = 1.0
+				if nearby_categories.has(category_id):
+					connection_modifier = 1.0 - connected_discount
+				
+				base_buy_price = base_buy_price * market_modifier * connection_modifier
+		
+		# Player receives 95% of current buy price
+		var sell_back_price = base_buy_price * 0.95
+		
+		row["buy_price"] = round(sell_back_price * 100.0) / 100.0
+		prices[item_id] = row
+	
+	return prices
 
 # ============================================================================
 # QUERY FUNCTIONS - Player State

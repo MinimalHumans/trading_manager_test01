@@ -329,8 +329,13 @@ func refresh_market():
 	
 	player_inventory = db_manager.get_player_inventory()
 	
-	# Calculate sell prices from the SAME buy items (ensures 95% ratio)
-	market_sell_prices = db_manager.get_market_sell_prices_from_items(market_buy_items)
+	# Get sell prices based on what the system wants to buy (from system_market_sell view)
+	market_sell_prices = db_manager.get_market_sell_prices(
+		system_id,
+		universe_market_values,
+		connected_planet_discount,
+		market_value_per_point
+	)
 	
 	if market_ui:
 		market_ui.update_market(market_buy_items, current_player_state, market_type)

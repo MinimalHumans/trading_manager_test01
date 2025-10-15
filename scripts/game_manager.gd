@@ -555,6 +555,8 @@ func _on_item_purchased(item_id: int, item_name: String, quantity: float, price_
 
 func _on_item_sold(item_id: int, item_name: String, quantity: float, price_per_ton: float):
 	var total_revenue = quantity * price_per_ton
+	var system_id = current_player_state.get("current_system_id", 0)
+	var market_type = current_player_state.get("market_type", "infinite")
 	
 	# Validate sale
 	var owned_quantity = 0.0
@@ -567,10 +569,11 @@ func _on_item_sold(item_id: int, item_name: String, quantity: float, price_per_t
 		_show_error("You don't have that much to sell!")
 		return
 	
-	# Execute sale
-	if db_manager.execute_sale(item_id, quantity, total_revenue):
+	# Execute sale (now returns items to system inventory if finite market)
+	if db_manager.execute_sale(item_id, quantity, total_revenue, system_id, market_type):
 		print("Sold %.1f tons of %s for %s" % [quantity, item_name, db_manager.format_credits(total_revenue)])
 		refresh_player_state()
+		refresh_market()  # Refresh to show updated stock levels
 		refresh_cargo()
 		credits_changed.emit()
 		cargo_changed.emit()

@@ -339,24 +339,52 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 	
 	return base_items
 
-func get_market_sell_prices(system_id: int) -> Dictionary:
-	var query = """
-	SELECT 
-		item_id,
-		item_name,
-		buy_price,
-		price_category,
-		will_buy
-	FROM system_market_sell
-	WHERE system_id = %d
-	""" % system_id
+
+
+# Replace the get_market_sell_prices function in database_manager.gd with this:
+
+func get_market_sell_prices(system_id: int, universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05, player_inventory: Array = []) -> Dictionary:
+	# Get the current buy prices at this system (what player pays to purchase)
+	var buy_items = get_market_buy_items(system_id, "infinite", universe_market, connected_discount, market_modifier_per_point)
 	
-	game_db.query(query)
+	# Create lookup of what player paid for each item
+	var buy_prices_lookup = {}
+	for item in buy_items:
+		var item_id = item["item_id"]
+		var player_paid_price = item["sell_price"]  # Confusing name, but this is what player pays
+		
+		# Player sells back at 95% of what they paid (5% transaction fee)
+		var sell_back_price = player_paid_price * 0.95
+		
+		buy_prices_lookup[item_id] = {
+			"item_id": item_id,
+			"item_name": item["item_name"],
+			"buy_price": round(sell_back_price * 100.0) / 100.0,  # What player receives
+			"will_buy": 1,
+			"category_name": item.get("category_name", ""),
+			"price_category": item.get("price_category", "Average")
+		}
 	
-	# Convert to dictionary for easy lookup
+	# Create prices dictionary for items player owns
 	var prices = {}
-	for row in game_db.query_result:
-		prices[row["item_id"]] = row
+	
+	for inv_item in player_inventory:
+		var item_id = inv_item.get("item_id", 0)
+		
+		if buy_prices_lookup.has(item_id):
+			# Use the calculated sell-back price
+			prices[item_id] = buy_prices_lookup[item_id]
+		else:
+			# Item not available at this market - player can still sell but at a penalty
+			# We don't know what they paid, so use a default low price
+			prices[item_id] = {
+				"item_id": item_id,
+				"item_name": inv_item.get("item_name", "Unknown"),
+				"buy_price": 1.0,  # Very low emergency sell price
+				"will_buy": 1,
+				"category_name": inv_item.get("category_name", ""),
+				"price_category": "Very Low"
+			}
 	
 	return prices
 

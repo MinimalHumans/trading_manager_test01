@@ -374,7 +374,7 @@ func refresh_market():
 	var system_id = current_player_state.get("current_system_id", 0)
 	var market_type = current_player_state.get("market_type", "infinite")
 	
-	# NEW: Pass universe market values, connection discount, AND market modifier strength
+	# Pass universe market values, connection discount, AND market modifier strength
 	market_buy_items = db_manager.get_market_buy_items(
 		system_id, 
 		market_type, 
@@ -382,17 +382,28 @@ func refresh_market():
 		connected_planet_discount,
 		market_value_per_point
 	)
-	market_sell_prices = db_manager.get_market_sell_prices(system_id)
+	
+	# Get current inventory for sell price calculation
+	player_inventory = db_manager.get_player_inventory()
+	
+	# NEW: Pass same parameters to get_market_sell_prices for consistency, including inventory
+	market_sell_prices = db_manager.get_market_sell_prices(
+		system_id,
+		universe_market_values,
+		connected_planet_discount,
+		market_value_per_point,
+		player_inventory
+	)
 	
 	if market_ui:
 		market_ui.update_market(market_buy_items, current_player_state, market_type)
 
 func refresh_cargo():
-	player_inventory = db_manager.get_player_inventory()
+	# player_inventory is already refreshed in refresh_market()
 	
 	if cargo_ui:
 		cargo_ui.update_cargo(player_inventory, market_sell_prices, current_player_state)
-		# NEW: Update market graph
+		# Update market graph
 		cargo_ui.update_market_graph(universe_market_values)
 
 # ============================================================================
@@ -553,7 +564,22 @@ func _on_item_purchased(item_id: int, item_name: String, quantity: float, price_
 	else:
 		_show_error("Purchase failed!")
 
+# R# Replace the _on_item_sold function in game_manager.gd:
+
 func _on_item_sold(item_id: int, item_name: String, quantity: float, price_per_ton: float):
+	# DEBUG
+	print("=== SELLING DEBUG ===")
+	print("Item: %s (ID: %d)" % [item_name, item_id])
+	print("Sell price offered: %f cr/ton" % price_per_ton)
+	
+	# Find what the current buy price is
+	for item in market_buy_items:
+		if item["item_id"] == item_id:
+			print("Current buy price: %f cr/ton" % item["sell_price"])
+			print("Ratio: sell/buy = %f" % (price_per_ton / item["sell_price"]))
+			break
+	print("====================")
+	
 	var total_revenue = quantity * price_per_ton
 	
 	# Validate sale
@@ -571,11 +597,13 @@ func _on_item_sold(item_id: int, item_name: String, quantity: float, price_per_t
 	if db_manager.execute_sale(item_id, quantity, total_revenue):
 		print("Sold %.1f tons of %s for %s" % [quantity, item_name, db_manager.format_credits(total_revenue)])
 		refresh_player_state()
+		refresh_market()  # NEW: Refresh market to update sell prices based on new inventory
 		refresh_cargo()
 		credits_changed.emit()
 		cargo_changed.emit()
 	else:
 		_show_error("Sale failed!")
+
 
 # ============================================================================
 # UI DIALOGS

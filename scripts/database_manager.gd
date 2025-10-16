@@ -263,7 +263,7 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 			c.category_name,
 			r.rarity_name,
 			i.base_price,
-			ROUND(i.base_price * (1 + COALESCE(pcm.price_modifier, 0)), 2) as sell_price,
+			ROUND(i.base_price * r.price_multiplier * (1 + COALESCE(pcm.price_modifier, 0)), 2) as sell_price,
 			si.current_stock_tons as current_stock,
 			si.max_stock_tons as max_stock,
 			CASE 
@@ -676,62 +676,40 @@ func remove_from_player_sold_market(system_id: int, item_id: int, quantity: floa
 		return save_db.query(update_query)
 
 func get_market_sell_prices(system_id: int, universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05) -> Dictionary:
-	"""Get what the system is willing to buy (based on system_market_sell view) with 95% pricing"""
+	"""Get what the system is willing to buy (player sells for 95% of current market buy price)"""
 	
-	# Get items this system wants to buy (from database view)
-	var query = """
-	SELECT 
-		item_id,
-		item_name,
-		buy_price,
-		price_category,
-		will_buy
-	FROM system_market_sell
-	WHERE system_id = %d
-	""" % system_id
+	# Get the market type from the save database
+	var market_type = "infinite"  # default
+	if save_db and save_db.query("SELECT market_type FROM player_state WHERE player_id = 1"):
+		if save_db.query_result.size() > 0:
+			market_type = save_db.query_result[0]["market_type"]
 	
-	game_db.query(query)
+	# Get the ACTUAL current buy prices from the market (using the correct market type)
+	var current_buy_items = get_market_buy_items(
+		system_id, 
+		market_type,  # Use actual market type
+		universe_market,
+		connected_discount,
+		market_modifier_per_point
+	)
 	
-	# For each item the system buys, calculate 95% of current market buy price
+	# Convert to sell prices (95% of buy price)
 	var prices = {}
 	
-	for row in game_db.query_result:
-		var item_id = row["item_id"]
-		
-		# Get the current buy price for this item at this system
-		var base_buy_price = row["buy_price"]
-		
-		# Apply universe market modifiers if available
-		if not universe_market.is_empty():
-			# We need category info - query it
-			var cat_query = """
-			SELECT c.category_id, c.category_name
-			FROM items i
-			JOIN categories c ON i.category_id = c.category_id
-			WHERE i.item_id = %d
-			""" % item_id
-			
-			game_db.query(cat_query)
-			
-			if game_db.query_result.size() > 0:
-				var category_name = game_db.query_result[0]["category_name"]
-				var category_id = game_db.query_result[0]["category_id"]
-				
-				var nearby_categories = get_nearby_produced_categories(system_id)
-				var market_value = universe_market.get(category_name, 5.0)
-				var market_modifier = 1.0 + ((market_value - 5.0) * market_modifier_per_point)
-				
-				var connection_modifier = 1.0
-				if nearby_categories.has(category_id):
-					connection_modifier = 1.0 - connected_discount
-				
-				base_buy_price = base_buy_price * market_modifier * connection_modifier
+	for item in current_buy_items:
+		var item_id = item["item_id"]
+		var current_buy_price = item["sell_price"]  # This is what player pays to buy
 		
 		# Player receives 95% of current buy price
-		var sell_back_price = base_buy_price * 0.95
+		var sell_back_price = current_buy_price * 0.95
 		
-		row["buy_price"] = round(sell_back_price * 100.0) / 100.0
-		prices[item_id] = row
+		prices[item_id] = {
+			"item_id": item_id,
+			"item_name": item["item_name"],
+			"buy_price": round(sell_back_price * 100.0) / 100.0,  # What system pays player
+			"price_category": item["price_category"],
+			"will_buy": 1
+		}
 	
 	return prices
 

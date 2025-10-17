@@ -230,6 +230,20 @@ func get_trade_hub_demand_multiplier(category_name: String, universe_market: Dic
 	else:
 		return 0.7
 
+func get_trade_hub_supply_multiplier(category_name: String, universe_market: Dictionary) -> float:
+	"""Calculate dynamic price multiplier for Trade Hubs when SELLING to player"""
+	var market_value = universe_market.get(category_name, 5.0)
+	
+	# Hot market - they charge premium
+	if market_value > 5.5:
+		return 1.2  # 20% markup
+	# Average market - slight markup
+	elif market_value >= 4.5:
+		return 1.1  # 10% markup
+	# Cold market - discount to move inventory
+	else:
+		return 0.9  # 10% discount
+
 # ============================================================================
 # NEW: DETERMINISTIC ITEM SELECTION WITH SMART COUNTS
 # ============================================================================
@@ -586,6 +600,11 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 					connection_modifier = 1.0 - connected_discount
 				
 				sell_price *= market_modifier * connection_modifier
+				
+				# NEW: Trade Hub dynamic pricing
+				if planet_type_id == 11:  # Trade Hub
+					var trade_hub_modifier = get_trade_hub_supply_multiplier(category_name, universe_market)
+					sell_price *= trade_hub_modifier
 			
 			# Calculate price category for display
 			var total_price_ratio = sell_price / base_price

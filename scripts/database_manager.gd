@@ -22,6 +22,12 @@ var system_connections: Dictionary = {}
 var category_relationships: Array = []  # Market relationships
 var market_events: Array = []  # All possible events
 
+# Tunable balance variables (loaded from database)
+var rarity_multiplier_rare: float = 1.25
+var rarity_multiplier_exotic: float = 1.50
+var universe_market_modifier_strength: float = 0.03
+var connection_discount_amount: float = 0.10
+
 func _ready():
 	initialize_database()
 
@@ -44,8 +50,41 @@ func initialize_database() -> bool:
 	save_db = SQLite.new()
 	save_db.path = save_db_path
 	
+	# Load tunable variables
+	load_tunable_variables()
+	
 	cache_static_data()
 	return true
+
+func load_tunable_variables():
+	# Load balance variables from database
+	var variables_to_load = [
+		"rarity_multiplier_rare",
+		"rarity_multiplier_exotic", 
+		"universe_market_modifier_strength",
+		"connection_discount_amount"
+	]
+	
+	for var_name in variables_to_load:
+		var query = "SELECT variable_value FROM global_variables WHERE variable_name = '%s'" % var_name
+		game_db.query(query)
+		if game_db.query_result.size() > 0:
+			match var_name:
+				"rarity_multiplier_rare":
+					rarity_multiplier_rare = game_db.query_result[0]["variable_value"]
+				"rarity_multiplier_exotic":
+					rarity_multiplier_exotic = game_db.query_result[0]["variable_value"]
+				"universe_market_modifier_strength":
+					universe_market_modifier_strength = game_db.query_result[0]["variable_value"]
+				"connection_discount_amount":
+					connection_discount_amount = game_db.query_result[0]["variable_value"]
+	
+	print("Loaded tunable variables: Rare x%.2f, Exotic x%.2f, Market ±%.0f%%, Connection -%d%%" % [
+		rarity_multiplier_rare, 
+		rarity_multiplier_exotic,
+		universe_market_modifier_strength * 5 * 100,  # Convert to percentage range
+		connection_discount_amount * 100
+	])
 
 # Cache frequently accessed data
 func cache_static_data():
@@ -378,6 +417,53 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 	
 	return base_items
 
+func get_market_sell_prices(system_id: int, universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05) -> Dictionary:
+	"""Get what the system is willing to buy (check for same-market resale penalty)"""
+	
+	# Get the market type from the save database
+	var market_type = "infinite"  # default
+	if save_db and save_db.query("SELECT market_type FROM player_state WHERE player_id = 1"):
+		if save_db.query_result.size() > 0:
+			market_type = save_db.query_result[0]["market_type"]
+	
+	# Get the ACTUAL current buy prices from the market
+	var current_buy_items = get_market_buy_items(
+		system_id, 
+		market_type,
+		universe_market,
+		connected_discount,
+		market_modifier_per_point
+	)
+	
+	# Convert to sell prices
+	var prices = {}
+	
+	for item in current_buy_items:
+		var item_id = item["item_id"]
+		var current_buy_price = item["sell_price"]  # This is what player pays to buy
+		
+		# Check if this item was purchased at THIS system
+		var was_purchased_here = false
+		if save_db and save_db.query("SELECT purchase_system_id FROM player_inventory WHERE player_id = 1 AND item_id = %d" % item_id):
+			if save_db.query_result.size() > 0:
+				var purchase_system = save_db.query_result[0].get("purchase_system_id", null)
+				was_purchased_here = (purchase_system == system_id)
+		
+		# Apply 5% penalty ONLY if selling back where purchased in same session
+		var sell_multiplier = 1.0 if not was_purchased_here else 0.95
+		var sell_back_price = current_buy_price * sell_multiplier
+		
+		prices[item_id] = {
+			"item_id": item_id,
+			"item_name": item["item_name"],
+			"buy_price": round(sell_back_price * 100.0) / 100.0,  # What system pays player
+			"price_category": item["price_category"],
+			"will_buy": 1,
+			"resale_penalty": was_purchased_here  # Track if penalty applied
+		}
+	
+	return prices
+
 # ============================================================================
 # SYSTEM INVENTORY FUNCTIONS (Finite Markets)
 # ============================================================================
@@ -634,13 +720,22 @@ func clear_player_sold_market_at_system(system_id: int):
 	if not save_db or not save_db.query("SELECT 1"):
 		return
 	
+	# Also clear purchase location tracking when leaving a system
 	var query = """
+	UPDATE player_inventory
+	SET purchase_system_id = NULL
+	WHERE player_id = 1 AND purchase_system_id = %d
+	""" % system_id
+	
+	save_db.query(query)
+	
+	var clear_query = """
 	DELETE FROM player_sold_market
 	WHERE system_id = %d
 	""" % system_id
 	
-	save_db.query(query)
-	print("Cleared player-sold market at system %d" % system_id)
+	save_db.query(clear_query)
+	print("Cleared player-sold market and purchase tracking at system %d" % system_id)
 
 func remove_from_player_sold_market(system_id: int, item_id: int, quantity: float) -> bool:
 	if not save_db or not save_db.query("SELECT 1"):
@@ -675,44 +770,6 @@ func remove_from_player_sold_market(system_id: int, item_id: int, quantity: floa
 		
 		return save_db.query(update_query)
 
-func get_market_sell_prices(system_id: int, universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05) -> Dictionary:
-	"""Get what the system is willing to buy (player sells for 95% of current market buy price)"""
-	
-	# Get the market type from the save database
-	var market_type = "infinite"  # default
-	if save_db and save_db.query("SELECT market_type FROM player_state WHERE player_id = 1"):
-		if save_db.query_result.size() > 0:
-			market_type = save_db.query_result[0]["market_type"]
-	
-	# Get the ACTUAL current buy prices from the market (using the correct market type)
-	var current_buy_items = get_market_buy_items(
-		system_id, 
-		market_type,  # Use actual market type
-		universe_market,
-		connected_discount,
-		market_modifier_per_point
-	)
-	
-	# Convert to sell prices (95% of buy price)
-	var prices = {}
-	
-	for item in current_buy_items:
-		var item_id = item["item_id"]
-		var current_buy_price = item["sell_price"]  # This is what player pays to buy
-		
-		# Player receives 95% of current buy price
-		var sell_back_price = current_buy_price * 0.95
-		
-		prices[item_id] = {
-			"item_id": item_id,
-			"item_name": item["item_name"],
-			"buy_price": round(sell_back_price * 100.0) / 100.0,  # What system pays player
-			"price_category": item["price_category"],
-			"will_buy": 1
-		}
-	
-	return prices
-
 # ============================================================================
 # QUERY FUNCTIONS - Player State
 # ============================================================================
@@ -744,6 +801,7 @@ func initialize_new_game(config: Dictionary) -> bool:
 			player_id INTEGER DEFAULT 1,
 			item_id INTEGER NOT NULL,
 			quantity_tons REAL NOT NULL,
+			purchase_system_id INTEGER DEFAULT NULL,
 			PRIMARY KEY (player_id, item_id),
 			CHECK (quantity_tons > 0)
 		)""",
@@ -863,7 +921,8 @@ func get_player_inventory() -> Array:
 		pi.item_id,
 		i.item_name,
 		c.category_name,
-		pi.quantity_tons
+		pi.quantity_tons,
+		pi.purchase_system_id
 	FROM player_inventory pi
 	JOIN game_db.items i ON pi.item_id = i.item_id
 	JOIN game_db.categories c ON i.category_id = c.category_id
@@ -950,26 +1009,43 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 			save_db.query("ROLLBACK")
 			return false
 	
-	var check_query = "SELECT quantity_tons FROM player_inventory WHERE player_id = 1 AND item_id = %d" % item_id
+	var check_query = "SELECT quantity_tons, purchase_system_id FROM player_inventory WHERE player_id = 1 AND item_id = %d" % item_id
 	save_db.query(check_query)
 	
 	if save_db.query_result.size() > 0:
 		var current_qty = save_db.query_result[0]["quantity_tons"]
+		var existing_purchase_system = save_db.query_result[0].get("purchase_system_id", null)
 		var new_qty = current_qty + quantity
-		var update_inventory = """
-		UPDATE player_inventory 
-		SET quantity_tons = %f
-		WHERE player_id = 1 AND item_id = %d
-		""" % [new_qty, item_id]
 		
-		if not save_db.query(update_inventory):
-			save_db.query("ROLLBACK")
-			return false
+		# If we already have some from a different system or no system recorded, don't update purchase_system_id
+		# This preserves the ability to sell without penalty at other locations
+		if existing_purchase_system == null or existing_purchase_system != system_id:
+			var update_inventory = """
+			UPDATE player_inventory 
+			SET quantity_tons = %f
+			WHERE player_id = 1 AND item_id = %d
+			""" % [new_qty, item_id]
+			
+			if not save_db.query(update_inventory):
+				save_db.query("ROLLBACK")
+				return false
+		else:
+			# Same system - just update quantity
+			var update_inventory = """
+			UPDATE player_inventory 
+			SET quantity_tons = %f
+			WHERE player_id = 1 AND item_id = %d
+			""" % [new_qty, item_id]
+			
+			if not save_db.query(update_inventory):
+				save_db.query("ROLLBACK")
+				return false
 	else:
+		# New item - record purchase location
 		var insert_inventory = """
-		INSERT INTO player_inventory (player_id, item_id, quantity_tons)
-		VALUES (1, %d, %f)
-		""" % [item_id, quantity]
+		INSERT INTO player_inventory (player_id, item_id, quantity_tons, purchase_system_id)
+		VALUES (1, %d, %f, %d)
+		""" % [item_id, quantity, system_id]
 		
 		if not save_db.query(insert_inventory):
 			save_db.query("ROLLBACK")
@@ -1011,6 +1087,7 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float, system_id
 			save_db.query("ROLLBACK")
 			return false
 	else:
+		# Keep the item but don't change purchase_system_id
 		var update_inventory = """
 		UPDATE player_inventory 
 		SET quantity_tons = %f

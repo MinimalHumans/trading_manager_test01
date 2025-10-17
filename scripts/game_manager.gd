@@ -23,7 +23,7 @@ var player_inventory: Array = []
 var universe_market_values: Dictionary = {}
 var market_fluctuation_amount: float = 0.3
 var connected_planet_discount: float = 0.10
-var market_value_per_point: float = 0.05
+var market_value_per_point: float = 0.03  # Will be loaded from DB
 
 # Event system
 var current_event: Dictionary = {}
@@ -75,6 +75,9 @@ func _on_start_game(config: Dictionary):
 		return
 	print("Init DB: %d ms" % (Time.get_ticks_msec() - start_time))
 	
+	# Load tunable variables from database
+	load_tunable_variables()
+	
 	initialize_universe_market()
 	
 	var t1 = Time.get_ticks_msec()
@@ -111,6 +114,16 @@ func _on_start_game(config: Dictionary):
 	print("TOTAL START TIME: %d ms" % (Time.get_ticks_msec() - start_time))
 	
 	game_started.emit()
+
+func load_tunable_variables():
+	# Get tunable variables from the database manager
+	market_value_per_point = db_manager.universe_market_modifier_strength
+	connected_planet_discount = db_manager.connection_discount_amount
+	
+	print("Loaded game balance variables: Market strength: ±%.0f%%, Connection discount: %d%%" % [
+		market_value_per_point * 5 * 100,  # Convert to percentage range
+		connected_planet_discount * 100
+	])
 
 func initialize_universe_market():
 	var categories = [
@@ -329,7 +342,7 @@ func refresh_market():
 	
 	player_inventory = db_manager.get_player_inventory()
 	
-	# Get sell prices based on what the system wants to buy (from system_market_sell view)
+	# Get sell prices based on what the system wants to buy
 	market_sell_prices = db_manager.get_market_sell_prices(
 		system_id,
 		universe_market_values,
@@ -496,6 +509,14 @@ func _on_item_sold(item_id: int, item_name: String, quantity: float, price_per_t
 	print("=== SELLING DEBUG ===")
 	print("Item: %s (ID: %d)" % [item_name, item_id])
 	print("Sell price offered: %f cr/ton" % price_per_ton)
+	
+	# Check if resale penalty was applied
+	if market_sell_prices.has(item_id):
+		var price_info = market_sell_prices[item_id]
+		if price_info.get("resale_penalty", false):
+			print("Resale penalty applied (selling at same market)")
+		else:
+			print("No penalty - selling at different market")
 	
 	for item in market_buy_items:
 		if item["item_id"] == item_id:

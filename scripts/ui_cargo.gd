@@ -1,5 +1,6 @@
 # ui_cargo.gd
 # Right column - Cargo hold/Sell interface controller
+# UPDATED: Added demand indicators and detailed pricing info
 
 extends PanelContainer
 
@@ -9,14 +10,14 @@ extends PanelContainer
 @onready var cargo_vbox: VBoxContainer = $VBoxContainer/CargoScroll/CargoVbox
 @onready var cargo_title: Label = $VBoxContainer/CargoHeader/CargoTitle
 
-# NEW: Market graph container (created dynamically)
+# Market graph container (created dynamically)
 var market_graph_container: Control
 
 func _ready():
 	# Create market graph container dynamically
 	market_graph_container = Control.new()
 	market_graph_container.name = "MarketGraphContainer"
-	market_graph_container.custom_minimum_size = Vector2(0, 360)  # Doubled from 180
+	market_graph_container.custom_minimum_size = Vector2(0, 360)
 	market_graph_container.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	
 	# Add to VBoxContainer at the end
@@ -57,7 +58,6 @@ func update_cargo(inventory: Array, prices: Dictionary, player_data: Dictionary)
 	# Rebuild cargo list
 	_rebuild_cargo_list()
 
-# NEW: Update market graph
 func update_market_graph(market_values: Dictionary):
 	current_market_values = market_values
 	if market_graph_container:
@@ -83,7 +83,7 @@ func _rebuild_cargo_list():
 
 func _create_cargo_item_ui(item: Dictionary) -> Control:
 	var container = PanelContainer.new()
-	container.custom_minimum_size = Vector2(0, 120)
+	container.custom_minimum_size = Vector2(0, 160)  # Increased height for more info
 	
 	# Style
 	var style = StyleBoxFlat.new()
@@ -122,17 +122,74 @@ func _create_cargo_item_ui(item: Dictionary) -> Control:
 	var will_buy = price_info.get("will_buy", 0)
 	
 	if will_buy:
-		# Price info
+		# Demand indicator
+		var demand_level = price_info.get("demand_level", "NONE")
+		var demand_multiplier = price_info.get("demand_multiplier", 0.7)
+		
+		var demand_label = Label.new()
+		var demand_icon = ""
+		var demand_color = Color.WHITE
+		
+		match demand_level:
+			"HIGH":
+				demand_icon = "🔥 HIGH DEMAND"
+				demand_color = Color(0.2, 1.0, 0.2)
+			"MEDIUM":
+				demand_icon = "📦 MEDIUM DEMAND"
+				demand_color = Color(1.0, 1.0, 0.4)
+			"LOW":
+				demand_icon = "💰 LOW DEMAND"
+				demand_color = Color(1.0, 0.7, 0.3)
+			"MARKET-BASED":
+				demand_icon = "📈 TRADE HUB (Market-Based)"
+				demand_color = Color(0.8, 0.8, 1.0)
+			"NONE":
+				demand_icon = "⚠️ DUMP PRICE (Low Demand)"
+				demand_color = Color(1.0, 0.4, 0.4)
+		
+		demand_label.text = demand_icon
+		demand_label.add_theme_color_override("font_color", demand_color)
+		demand_label.add_theme_font_size_override("font_size", 13)
+		vbox.add_child(demand_label)
+		
+		# Price info with breakdown
 		var buy_price = price_info.get("buy_price", 0)
 		var price_category = price_info.get("price_category", "Average")
 		
 		var price_label = Label.new()
-		price_label.text = "This system pays: %s cr/ton (%s)" % [
+		price_label.text = "Selling price: %s cr/ton (%s)" % [
 			db_manager.format_credits(buy_price).replace(" cr", ""),
 			price_category
 		]
 		price_label.add_theme_color_override("font_color", db_manager.get_price_color(price_category))
 		vbox.add_child(price_label)
+		
+		# Penalty/modifier indicators
+		var modifiers_text = ""
+		var produces_this = price_info.get("produces_this", false)
+		var resale_penalty = price_info.get("resale_penalty", false)
+		
+		if resale_penalty:
+			modifiers_text += "⚠️ Resale penalty (-5%) "
+		
+		if modifiers_text != "":
+			var modifiers_label = Label.new()
+			modifiers_label.text = modifiers_text.strip_edges()
+			modifiers_label.add_theme_font_size_override("font_size", 11)
+			modifiers_label.add_theme_color_override("font_color", Color(1.0, 0.7, 0.3))
+			vbox.add_child(modifiers_label)
+		
+		# Show final multiplier if not 100%
+		var total_multiplier = demand_multiplier
+		if resale_penalty:
+			total_multiplier *= 0.95
+		
+		if total_multiplier < 1.0:
+			var multiplier_label = Label.new()
+			multiplier_label.text = "Selling at %.0f%% of base market value" % (total_multiplier * 100)
+			multiplier_label.add_theme_font_size_override("font_size", 11)
+			multiplier_label.add_theme_color_override("font_color", Color(0.8, 0.8, 0.8))
+			vbox.add_child(multiplier_label)
 		
 		# Total value
 		var total_value = buy_price * item.get("quantity_tons", 0)
@@ -175,9 +232,9 @@ func _create_cargo_item_ui(item: Dictionary) -> Control:
 		sell_hbox.add_child(sell_button)
 		
 	else:
-		# System not buying
+		# System not buying (shouldn't happen with new system)
 		var not_buying_label = Label.new()
-		not_buying_label.text = "Not buying"
+		not_buying_label.text = "Not buying (Error - report this)"
 		not_buying_label.add_theme_color_override("font_color", Color(0.8, 0.4, 0.4))
 		vbox.add_child(not_buying_label)
 	
@@ -198,7 +255,7 @@ func _on_sell_pressed(item_id: int, item_name: String, quantity_input: SpinBox, 
 	# Reset quantity
 	quantity_input.value = 0
 
-# NEW: Custom draw function for market graph
+# Custom draw function for market graph
 func _on_market_graph_draw():
 	if not market_graph_container:
 		return

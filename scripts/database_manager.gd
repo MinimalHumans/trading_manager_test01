@@ -1,5 +1,6 @@
 # database_manager.gd
 # Handles all SQLite database operations for the trading prototype
+# UPDATED: Added planet demand system and deterministic item selection
 
 extends Node
 
@@ -21,12 +22,24 @@ var all_categories: Array = []
 var system_connections: Dictionary = {}
 var category_relationships: Array = []  # Market relationships
 var market_events: Array = []  # All possible events
+var planet_demand_categories: Dictionary = {}  # NEW: {planet_type_id: {category_id: demand_level}}
 
 # Tunable balance variables (loaded from database)
 var rarity_multiplier_rare: float = 1.25
 var rarity_multiplier_exotic: float = 1.50
 var universe_market_modifier_strength: float = 0.03
 var connection_discount_amount: float = 0.10
+
+# NEW: Item variety variables
+var items_per_category_common: int = 3
+var items_per_category_rare: int = 2
+var items_per_category_exotic: int = 1
+var items_per_category_common_trade_hub: int = 5
+var items_per_category_rare_trade_hub: int = 3
+var items_per_category_exotic_trade_hub: int = 2
+
+# NEW: Demand multipliers
+var demand_multipliers: Dictionary = {}
 
 func _ready():
 	initialize_database()
@@ -62,28 +75,73 @@ func load_tunable_variables():
 		"rarity_multiplier_rare",
 		"rarity_multiplier_exotic", 
 		"universe_market_modifier_strength",
-		"connection_discount_amount"
+		"connection_discount_amount",
+		"items_per_category_common",
+		"items_per_category_rare",
+		"items_per_category_exotic",
+		"items_per_category_common_trade_hub",
+		"items_per_category_rare_trade_hub",
+		"items_per_category_exotic_trade_hub",
+		"demand_multiplier_high",
+		"demand_multiplier_medium",
+		"demand_multiplier_low",
+		"demand_multiplier_none"
 	]
 	
 	for var_name in variables_to_load:
 		var query = "SELECT variable_value FROM global_variables WHERE variable_name = '%s'" % var_name
 		game_db.query(query)
 		if game_db.query_result.size() > 0:
+			var value = game_db.query_result[0]["variable_value"]
 			match var_name:
 				"rarity_multiplier_rare":
-					rarity_multiplier_rare = game_db.query_result[0]["variable_value"]
+					rarity_multiplier_rare = value
 				"rarity_multiplier_exotic":
-					rarity_multiplier_exotic = game_db.query_result[0]["variable_value"]
+					rarity_multiplier_exotic = value
 				"universe_market_modifier_strength":
-					universe_market_modifier_strength = game_db.query_result[0]["variable_value"]
+					universe_market_modifier_strength = value
 				"connection_discount_amount":
-					connection_discount_amount = game_db.query_result[0]["variable_value"]
+					connection_discount_amount = value
+				"items_per_category_common":
+					items_per_category_common = int(value)
+				"items_per_category_rare":
+					items_per_category_rare = int(value)
+				"items_per_category_exotic":
+					items_per_category_exotic = int(value)
+				"items_per_category_common_trade_hub":
+					items_per_category_common_trade_hub = int(value)
+				"items_per_category_rare_trade_hub":
+					items_per_category_rare_trade_hub = int(value)
+				"items_per_category_exotic_trade_hub":
+					items_per_category_exotic_trade_hub = int(value)
+				"demand_multiplier_high":
+					demand_multipliers["HIGH"] = value
+				"demand_multiplier_medium":
+					demand_multipliers["MEDIUM"] = value
+				"demand_multiplier_low":
+					demand_multipliers["LOW"] = value
+				"demand_multiplier_none":
+					demand_multipliers["NONE"] = value
 	
 	print("Loaded tunable variables: Rare x%.2f, Exotic x%.2f, Market ±%.0f%%, Connection -%d%%" % [
 		rarity_multiplier_rare, 
 		rarity_multiplier_exotic,
-		universe_market_modifier_strength * 5 * 100,  # Convert to percentage range
+		universe_market_modifier_strength * 5 * 100,
 		connection_discount_amount * 100
+	])
+	print("Item variety: Common=%d, Rare=%d, Exotic=%d (Trade Hub: %d/%d/%d)" % [
+		items_per_category_common,
+		items_per_category_rare,
+		items_per_category_exotic,
+		items_per_category_common_trade_hub,
+		items_per_category_rare_trade_hub,
+		items_per_category_exotic_trade_hub
+	])
+	print("Demand multipliers: HIGH=%.0f%%, MEDIUM=%.0f%%, LOW=%.0f%%, NONE=%.0f%%" % [
+		demand_multipliers["HIGH"] * 100,
+		demand_multipliers["MEDIUM"] * 100,
+		demand_multipliers["LOW"] * 100,
+		demand_multipliers["NONE"] * 100
 	])
 
 # Cache frequently accessed data
@@ -94,9 +152,196 @@ func cache_static_data():
 	system_connections = get_all_connections()
 	category_relationships = get_category_relationships()
 	market_events = get_all_market_events()
+	planet_demand_categories = get_planet_demand_categories()
 	
 	# Emit ready signal
 	database_ready.emit()
+
+# ============================================================================
+# NEW: PLANET DEMAND SYSTEM
+# ============================================================================
+
+func get_planet_demand_categories() -> Dictionary:
+	"""Load planet demand relationships into memory"""
+	var query = """
+	SELECT planet_type_id, category_id, demand_level
+	FROM planet_demand_categories
+	"""
+	
+	game_db.query(query)
+	
+	var demand_map = {}
+	for row in game_db.query_result:
+		var planet_type_id = row["planet_type_id"]
+		var category_id = row["category_id"]
+		var demand_level = row["demand_level"]
+		
+		if not demand_map.has(planet_type_id):
+			demand_map[planet_type_id] = {}
+		
+		demand_map[planet_type_id][category_id] = demand_level
+	
+	print("Loaded planet demand categories for %d planet types" % demand_map.size())
+	return demand_map
+
+func get_demand_level(planet_type_id: int, category_id: int) -> String:
+	"""Get demand level for a category at a planet type. Returns 'HIGH', 'MEDIUM', 'LOW', or 'NONE'"""
+	if planet_demand_categories.has(planet_type_id):
+		if planet_demand_categories[planet_type_id].has(category_id):
+			return planet_demand_categories[planet_type_id][category_id]
+	return "NONE"
+
+func does_planet_produce_category(planet_type_id: int, category_id: int) -> bool:
+	"""Check if a planet type produces items in this category (has negative price modifier)"""
+	var query = """
+	SELECT price_modifier
+	FROM planet_category_modifiers
+	WHERE planet_type_id = %d AND category_id = %d AND price_modifier < 0
+	""" % [planet_type_id, category_id]
+	
+	game_db.query(query)
+	return game_db.query_result.size() > 0
+
+func get_trade_hub_demand_multiplier(category_name: String, universe_market: Dictionary) -> float:
+	"""Calculate dynamic demand multiplier for Trade Hubs based on universe market"""
+	var market_value = universe_market.get(category_name, 5.0)
+	
+	# Above average market - they want to buy
+	if market_value > 5.5:
+		return 1.0
+	# Average market
+	elif market_value >= 4.5:
+		return 0.9
+	# Below average market - they're cautious
+	else:
+		return 0.8
+
+# ============================================================================
+# NEW: DETERMINISTIC ITEM SELECTION WITH SMART COUNTS
+# ============================================================================
+
+func get_item_count_for_category(planet_type_id: int, category_id: int) -> Dictionary:
+	"""Determine how many items of each rarity to show based on planet's production and demand"""
+	
+	print("DEBUG: Checking item count for planet_type=%d, category=%d" % [planet_type_id, category_id])
+	
+	# Trade Hub special case - lots of everything
+	if planet_type_id == 11:
+		print("  -> Trade Hub: 5/3/2")
+		return {
+			"common": items_per_category_common_trade_hub,
+			"rare": items_per_category_rare_trade_hub,
+			"exotic": items_per_category_exotic_trade_hub
+		}
+	
+	# Check if planet produces this category
+	var produces = does_planet_produce_category(planet_type_id, category_id)
+	print("  -> Produces: %s" % produces)
+	
+	# Check demand level
+	var demand = get_demand_level(planet_type_id, category_id)
+	print("  -> Demand: %s" % demand)
+	
+	# No demand AND doesn't produce = don't show at all
+	if demand == "NONE" and not produces:
+		print("  -> HIDING CATEGORY (no demand, doesn't produce)")
+		return {"common": 0, "rare": 0, "exotic": 0}
+	
+	# Primary production category (they make this) - most variety
+	if produces:
+		print("  -> PRIMARY PRODUCTION: 5/3/2")
+		return {"common": 4, "rare": 3, "exotic": 2}
+	
+	# High demand categories - good variety
+	if demand == "HIGH":
+		print("  -> HIGH DEMAND: 4/2/1")
+		return {"common": 3, "rare": 1, "exotic": 1}
+	
+	# Medium demand - moderate variety
+	if demand == "MEDIUM":
+		print("  -> MEDIUM DEMAND: 2/1/1")
+		return {"common": 1, "rare": 1, "exotic": 0}
+	
+	# Low demand - minimal variety
+	if demand == "LOW":
+		print("  -> LOW DEMAND: 1/1/0")
+		return {"common": 1, "rare": 0, "exotic": 0}
+	
+	# Default fallback (shouldn't reach here)
+	print("  -> FALLBACK: 1/0/0")
+	return {"common": 1, "rare": 0, "exotic": 0}
+
+func get_items_for_system(system_id: int, planet_type_id: int, category_id: int) -> Array:
+	"""Get deterministic subset of items for a system. Same system always returns same items."""
+	
+	# Determine item counts based on planet's relationship to this category
+	var item_counts = get_item_count_for_category(planet_type_id, category_id)
+	var common_count = item_counts["common"]
+	var rare_count = item_counts["rare"]
+	var exotic_count = item_counts["exotic"]
+	
+	# If no items should be shown, return empty
+	if common_count == 0 and rare_count == 0 and exotic_count == 0:
+		return []
+	
+	# Get all items in this category
+	var category_items = []
+	for item in all_items:
+		if item["category_id"] == category_id:
+			category_items.append(item)
+	
+	# Separate by rarity AND SORT BY ID for consistency
+	var common_items = []
+	var rare_items = []
+	var exotic_items = []
+	
+	for item in category_items:
+		match item["rarity_name"]:
+			"Common":
+				common_items.append(item)
+			"Rare":
+				rare_items.append(item)
+			"Exotic":
+				exotic_items.append(item)
+	
+	# CRITICAL: Sort by item_id for consistent input to RNG
+	common_items.sort_custom(func(a, b): return a["item_id"] < b["item_id"])
+	rare_items.sort_custom(func(a, b): return a["item_id"] < b["item_id"])
+	exotic_items.sort_custom(func(a, b): return a["item_id"] < b["item_id"])
+	
+	# Create deterministic seed
+	var seed_value = hash(str(system_id) + "_" + str(category_id))
+	var rng = RandomNumberGenerator.new()
+	rng.seed = seed_value
+	
+	print("  -> System %d seed for category %d: %d" % [system_id, category_id, seed_value])
+	
+	# Select subsets using ONLY the seeded RNG
+	var selected = []
+	selected += _select_random_subset_deterministic(common_items, common_count, rng)
+	selected += _select_random_subset_deterministic(rare_items, rare_count, rng)
+	selected += _select_random_subset_deterministic(exotic_items, exotic_count, rng)
+	
+	print("  -> Selected %d items total" % selected.size())
+	
+	return selected
+
+func _select_random_subset_deterministic(items: Array, count: int, rng: RandomNumberGenerator) -> Array:
+	"""Select a random subset of items using ONLY the provided RNG - TRUE determinism"""
+	if items.size() <= count:
+		return items  # Return all if not enough
+	
+	var shuffled = items.duplicate()
+	
+	# Manual Fisher-Yates shuffle with seeded RNG
+	# DO NOT use shuffled.shuffle() - it uses Godot's global RNG!
+	for i in range(shuffled.size() - 1, 0, -1):
+		var j = rng.randi_range(0, i)
+		var temp = shuffled[i]
+		shuffled[i] = shuffled[j]
+		shuffled[j] = temp
+	
+	return shuffled.slice(0, count)
 
 # ============================================================================
 # QUERY FUNCTIONS - Items and Categories
@@ -258,123 +503,132 @@ func get_system_produced_categories(system_id: int) -> Array:
 	return categories
 
 # ============================================================================
-# QUERY FUNCTIONS - Market Data
+# QUERY FUNCTIONS - Market Data (COMPLETELY REWRITTEN)
 # ============================================================================
 
 func get_market_buy_items(system_id: int, market_type: String = "infinite", universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05) -> Array:
+	"""Get items available for purchase at this system using deterministic selection"""
+	print("\n=== BUILDING MARKET FOR SYSTEM %d ===" % system_id)
+	
+	var system_info = get_system_by_id(system_id)
+	if system_info.is_empty():
+		return []
+	
+	var planet_type_id = system_info["planet_type_id"]
+	var planet_name = system_info.get("planet_type_name", "Unknown")
+	print("Planet type: %s (ID: %d)" % [planet_name, planet_type_id])
+	
 	var base_items = []
 	
-	if market_type == "infinite":
-		var query = """
-		SELECT 
-			smb.item_id,
-			smb.item_name,
-			c.category_id,
-			smb.category_name,
-			smb.rarity_name,
-			smb.base_price,
-			smb.sell_price,
-			smb.availability_percent,
-			smb.price_category
-		FROM system_market_buy smb
-		JOIN categories c ON smb.category_name = c.category_name
-		WHERE smb.system_id = %d
-		ORDER BY smb.category_name, smb.rarity_name, smb.item_name
-		""" % system_id
+	# Use deterministic selection - iterate through all categories
+	for category in all_categories:
+		var category_id = category["category_id"]
+		var category_name = category["category_name"]
 		
-		game_db.query(query)
-		base_items = game_db.query_result
-	else:
-		if not save_db or not save_db.query("SELECT 1"):
-			push_error("Save database not available for finite market query")
-			return []
+		print("\nProcessing category: %s (ID: %d)" % [category_name, category_id])
 		
-		var attach_query = "ATTACH DATABASE '%s' AS game_db" % game_db_absolute_path
-		if not save_db.query(attach_query):
-			push_error("Failed to attach game database for finite market query")
-			return []
+		# Get deterministic item selection for this system and category
+		var selected_items = get_items_for_system(system_id, planet_type_id, category_id)
 		
-		var finite_query = """
-		SELECT 
-			i.item_id,
-			i.item_name,
-			i.category_id,
-			c.category_name,
-			r.rarity_name,
-			i.base_price,
-			ROUND(i.base_price * r.price_multiplier * (1 + COALESCE(pcm.price_modifier, 0)), 2) as sell_price,
-			si.current_stock_tons as current_stock,
-			si.max_stock_tons as max_stock,
-			CASE 
-				WHEN COALESCE(pcm.price_modifier, 0) <= -0.40 THEN 'Very Low'
-				WHEN COALESCE(pcm.price_modifier, 0) <= -0.20 THEN 'Low'
-				WHEN COALESCE(pcm.price_modifier, 0) <= -0.05 THEN 'Below Average'
-				WHEN COALESCE(pcm.price_modifier, 0) <= 0.05 THEN 'Average'
-				WHEN COALESCE(pcm.price_modifier, 0) <= 0.20 THEN 'Above Average'
-				WHEN COALESCE(pcm.price_modifier, 0) <= 0.40 THEN 'High'
-				ELSE 'Very High'
-			END as price_category
-		FROM system_inventory si
-	
-		JOIN game_db.items i ON si.item_id = i.item_id
-		JOIN game_db.categories c ON i.category_id = c.category_id
-		JOIN game_db.rarity_tiers r ON i.rarity_id = r.rarity_id
-		JOIN game_db.systems s ON si.system_id = s.system_id
-		LEFT JOIN game_db.planet_category_modifiers pcm ON 
-			s.planet_type_id = pcm.planet_type_id AND
-			i.category_id = pcm.category_id AND
-			pcm.price_modifier < 0
-		WHERE si.system_id = %d
-		ORDER BY c.category_name, r.rarity_name, i.item_name
-		""" % system_id
+		# If no items selected for this category, skip it
+		if selected_items.is_empty():
+			print("  -> No items selected, skipping")
+			continue
 		
-		save_db.query(finite_query)
-		base_items = save_db.query_result
-		save_db.query("DETACH DATABASE game_db")
-	
-	# Apply universe market modifiers and connection discounts
-	if not universe_market.is_empty():
-		var nearby_categories = get_nearby_produced_categories(system_id)
+		print("  -> Building market entries for %d items" % selected_items.size())
 		
-		for item in base_items:
-			var category_id = item.get("category_id", 0)
-			var category_name = item.get("category_name", "")
-			var base_sell_price = item.get("sell_price", 0)
+		# Build market entries for selected items
+		for item in selected_items:
+			var item_id = item["item_id"]
+			var item_name = item["item_name"]
+			var base_price = item["base_price"]
+			var rarity_name = item["rarity_name"]
+			var price_multiplier = item["price_multiplier"]
 			
-			var market_value = universe_market.get(category_name, 5.0)
-			var market_modifier = 1.0 + ((market_value - 5.0) * market_modifier_per_point)
+			# Calculate base sell price (what player pays to buy)
+			var sell_price = base_price * price_multiplier
 			
-			var connection_modifier = 1.0
-			if nearby_categories.has(category_id):
-				connection_modifier = 1.0 - connected_discount
+			# Apply planet category modifier
+			var planet_modifier_query = """
+			SELECT price_modifier
+			FROM planet_category_modifiers
+			WHERE planet_type_id = %d AND category_id = %d
+			""" % [planet_type_id, category_id]
 			
-			var final_price = base_sell_price * market_modifier * connection_modifier
-			item["sell_price"] = round(final_price * 100.0) / 100.0
+			game_db.query(planet_modifier_query)
+			if game_db.query_result.size() > 0:
+				var planet_modifier = game_db.query_result[0]["price_modifier"]
+				sell_price *= (1.0 + planet_modifier)
 			
-			var base_price = item.get("base_price", 1.0)
-			var total_price_ratio = final_price / base_price
-
+			# Apply universe market modifiers and connection discounts
+			if not universe_market.is_empty():
+				var nearby_categories = get_nearby_produced_categories(system_id)
+				
+				var market_value = universe_market.get(category_name, 5.0)
+				var market_modifier = 1.0 + ((market_value - 5.0) * market_modifier_per_point)
+				
+				var connection_modifier = 1.0
+				if nearby_categories.has(category_id):
+					connection_modifier = 1.0 - connected_discount
+				
+				sell_price *= market_modifier * connection_modifier
+			
+			# Calculate price category for display
+			var total_price_ratio = sell_price / base_price
+			var price_category = "Average"
 			if total_price_ratio <= 0.60:
-				item["price_category"] = "Very Low"
+				price_category = "Very Low"
 			elif total_price_ratio <= 0.80:
-				item["price_category"] = "Low"
+				price_category = "Low"
 			elif total_price_ratio <= 0.95:
-				item["price_category"] = "Below Average"
+				price_category = "Below Average"
 			elif total_price_ratio <= 1.05:
-				item["price_category"] = "Average"
+				price_category = "Average"
 			elif total_price_ratio <= 1.20:
-				item["price_category"] = "Above Average"
+				price_category = "Above Average"
 			elif total_price_ratio <= 1.40:
-				item["price_category"] = "High"
+				price_category = "High"
 			else:
-				item["price_category"] = "Very High"
+				price_category = "Very High"
+			
+			var market_item = {
+				"item_id": item_id,
+				"item_name": item_name,
+				"category_id": category_id,
+				"category_name": category_name,
+				"rarity_name": rarity_name,
+				"base_price": base_price,
+				"sell_price": round(sell_price * 100.0) / 100.0,
+				"price_category": price_category
+			}
+			
+			# Add stock info for finite markets
+			if market_type != "infinite":
+				var stock = get_item_stock(system_id, item_id)
+				var current_stock = stock.get("current_stock_tons", 0)
+				var max_stock = stock.get("max_stock_tons", 0)
+				
+				# CRITICAL: Only show items that have been initialized (max_stock > 0)
+				if max_stock == 0:
+					print("    -> Skipping %s (not initialized in inventory)" % item_name)
+					continue
+				
+				market_item["current_stock"] = current_stock
+				market_item["max_stock"] = max_stock
+			else:
+				market_item["availability_percent"] = 1.0
+			
+			base_items.append(market_item)
 	
-	# Add player-sold items to the market
+	# Add player-sold items to the market (these appear even if not in deterministic list)
 	var player_sold_items = get_player_sold_items_at_system(system_id)
+	
+	print("\nAdding %d player-sold items" % player_sold_items.size())
 	
 	for sold_item in player_sold_items:
 		var item_id = sold_item["item_id"]
 		
+		# Check if item already in market
 		var existing_index = -1
 		for i in range(base_items.size()):
 			if base_items[i]["item_id"] == item_id:
@@ -382,11 +636,12 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 				break
 		
 		if existing_index >= 0:
+			# Item already in market - add to stock
 			if market_type != "infinite":
 				var current_stock = base_items[existing_index].get("current_stock", 0)
 				base_items[existing_index]["current_stock"] = current_stock + sold_item["quantity_tons"]
-				base_items[existing_index]["max_stock"] = base_items[existing_index].get("max_stock", current_stock)
 		else:
+			# New item - add to market
 			var category_id = sold_item.get("category_id", 0)
 			var category_name = sold_item.get("category_name", "")
 			var base_price = sold_item.get("base_price", 100.0)
@@ -422,51 +677,130 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 			
 			base_items.append(new_item)
 	
+	print("\n=== TOTAL MARKET ITEMS: %d ===" % base_items.size())
 	return base_items
 
 func get_market_sell_prices(system_id: int, universe_market: Dictionary = {}, connected_discount: float = 0.10, market_modifier_per_point: float = 0.05) -> Dictionary:
-	"""Get what the system is willing to buy (check for same-market resale penalty)"""
+	"""Get what the system is willing to pay for items (COMPLETE OVERHAUL for demand system)"""
+	var system_info = get_system_by_id(system_id)
+	if system_info.is_empty():
+		return {}
 	
-	# Get the market type from the save database
-	var market_type = "infinite"  # default
-	if save_db and save_db.query("SELECT market_type FROM player_state WHERE player_id = 1"):
-		if save_db.query_result.size() > 0:
-			market_type = save_db.query_result[0]["market_type"]
-	
-	# Get the ACTUAL current buy prices from the market
-	var current_buy_items = get_market_buy_items(
-		system_id, 
-		market_type,
-		universe_market,
-		connected_discount,
-		market_modifier_per_point
-	)
-	
-	# Convert to sell prices
+	var planet_type_id = system_info["planet_type_id"]
 	var prices = {}
 	
-	for item in current_buy_items:
-		var item_id = item["item_id"]
-		var current_buy_price = item["sell_price"]  # This is what player pays to buy
+	# Get player inventory - we need to offer prices for EVERYTHING they have
+	var player_inv = get_player_inventory()
+	
+	for inv_item in player_inv:
+		var item_id = inv_item["item_id"]
+		var item_name = inv_item.get("item_name", "Unknown")
 		
-		# Check if this item was purchased at THIS system
+		# Find this item's details
+		var item_details = null
+		for item in all_items:
+			if item["item_id"] == item_id:
+				item_details = item
+				break
+		
+		if not item_details:
+			continue
+		
+		var category_id = item_details["category_id"]
+		var category_name = item_details["category_name"]
+		var base_price = item_details["base_price"]
+		var rarity_multiplier = item_details["price_multiplier"]
+		
+		# Calculate base market price (what player would pay to buy this)
+		var base_market_price = base_price * rarity_multiplier
+		
+		# Apply planet category modifier
+		var planet_modifier_query = """
+		SELECT price_modifier
+		FROM planet_category_modifiers
+		WHERE planet_type_id = %d AND category_id = %d
+		""" % [planet_type_id, category_id]
+		
+		game_db.query(planet_modifier_query)
+		if game_db.query_result.size() > 0:
+			var planet_modifier = game_db.query_result[0]["price_modifier"]
+			base_market_price *= (1.0 + planet_modifier)
+		
+		# Apply universe market modifiers
+		if not universe_market.is_empty():
+			var market_value = universe_market.get(category_name, 5.0)
+			var market_modifier = 1.0 + ((market_value - 5.0) * market_modifier_per_point)
+			base_market_price *= market_modifier
+			
+			var nearby_categories = get_nearby_produced_categories(system_id)
+			if nearby_categories.has(category_id):
+				base_market_price *= (1.0 - connected_discount)
+		
+		# Now apply demand-based multipliers
+		var produces_this = does_planet_produce_category(planet_type_id, category_id)
+		var production_multiplier = 1.0
+		
+		# Get demand level (special case for Trade Hubs)
+		var demand_multiplier = 1.0
+		if planet_type_id == 7:  # Trade Hub
+			demand_multiplier = get_trade_hub_demand_multiplier(category_name, universe_market)
+		else:
+			var demand_level = get_demand_level(planet_type_id, category_id)
+			demand_multiplier = demand_multipliers.get(demand_level, 0.70)
+		
+		# Check same-market resale penalty
 		var was_purchased_here = false
-		if save_db and save_db.query("SELECT purchase_system_id FROM player_inventory WHERE player_id = 1 AND item_id = %d" % item_id):
+		var purchase_system_query = """
+		SELECT purchase_system_id FROM player_inventory 
+		WHERE player_id = 1 AND item_id = %d
+		""" % item_id
+		
+		if save_db and save_db.query(purchase_system_query):
 			if save_db.query_result.size() > 0:
 				var purchase_system = save_db.query_result[0].get("purchase_system_id", null)
 				was_purchased_here = (purchase_system == system_id)
 		
-		# Apply 5% penalty ONLY if selling back where purchased in same session
-		var sell_multiplier = 1.0 if not was_purchased_here else 0.95
-		var sell_back_price = current_buy_price * sell_multiplier
+		var resale_multiplier = 0.95 if was_purchased_here else 1.0
+		
+		# Calculate final sell price (what planet pays player)
+		var final_price = base_market_price * production_multiplier * demand_multiplier * resale_multiplier
+		
+		# Determine price category
+		var price_ratio = final_price / base_price
+		var price_category = "Average"
+		if price_ratio <= 0.70:
+			price_category = "Very Low"
+		elif price_ratio <= 0.85:
+			price_category = "Low"
+		elif price_ratio <= 0.95:
+			price_category = "Below Average"
+		elif price_ratio <= 1.05:
+			price_category = "Average"
+		elif price_ratio <= 1.20:
+			price_category = "Above Average"
+		elif price_ratio <= 1.40:
+			price_category = "High"
+		else:
+			price_category = "Very High"
+		
+		# Determine demand indicator for UI
+		var demand_indicator = ""
+		if planet_type_id == 7:  # Trade Hub
+			demand_indicator = "MARKET-BASED"
+		else:
+			var demand_level = get_demand_level(planet_type_id, category_id)
+			demand_indicator = demand_level
 		
 		prices[item_id] = {
 			"item_id": item_id,
-			"item_name": item["item_name"],
-			"buy_price": round(sell_back_price * 100.0) / 100.0,  # What system pays player
-			"price_category": item["price_category"],
+			"item_name": item_name,
+			"buy_price": round(final_price * 100.0) / 100.0,
+			"price_category": price_category,
 			"will_buy": 1,
-			"resale_penalty": was_purchased_here  # Track if penalty applied
+			"resale_penalty": was_purchased_here,
+			"produces_this": produces_this,
+			"demand_level": demand_indicator,
+			"demand_multiplier": demand_multiplier
 		}
 	
 	return prices
@@ -524,31 +858,57 @@ func has_inventory_for_system(system_id: int) -> bool:
 	return false
 
 func initialize_system_inventory_lazy(system_id: int):
+	"""Initialize inventory using deterministic item selection"""
 	if has_inventory_for_system(system_id):
+		print("System %d already has inventory" % system_id)
 		return
 	
+	var system_info = get_system_by_id(system_id)
+	if system_info.is_empty():
+		push_error("System not found: %d" % system_id)
+		return
+	
+	# Get deterministic list of items for this system
 	var market_items = get_market_buy_items(system_id, "infinite")
 	
 	if market_items.size() == 0:
 		push_error("No market items found for system %d" % system_id)
 		return
 	
+	print("\n=== INITIALIZING INVENTORY for system %d ===" % system_id)
+	print("Creating inventory for %d items" % market_items.size())
+	
 	save_db.query("BEGIN TRANSACTION")
 	
 	for item in market_items:
 		var item_id = item["item_id"]
-		var availability = item.get("availability_percent", 0.5)
-		var max_stock = availability * 100.0
-		var current_stock = max_stock
+		var item_name = item.get("item_name", "Unknown")
+		var rarity = item.get("rarity_name", "Common")
+		
+		# Stock amounts based on rarity
+		var max_stock = 100.0  # Default
+		match rarity:
+			"Common":
+				max_stock = 150.0
+			"Rare":
+				max_stock = 75.0
+			"Exotic":
+				max_stock = 30.0
+		
+		var current_stock = max_stock  # Start at full stock
 		
 		var insert_query = """
 		INSERT INTO system_inventory (system_id, item_id, current_stock_tons, max_stock_tons, last_updated_jump)
 		VALUES (%d, %d, %f, %f, 0)
 		""" % [system_id, item_id, current_stock, max_stock]
 		
-		save_db.query(insert_query)
+		if not save_db.query(insert_query):
+			push_error("Failed to insert inventory for item %d (%s)" % [item_id, item_name])
+		else:
+			print("  Added %s: %.0f tons" % [item_name, max_stock])
 	
 	save_db.query("COMMIT")
+	print("=== INVENTORY INITIALIZED ===\n")
 
 func get_item_stock(system_id: int, item_id: int) -> Dictionary:
 	if not save_db or not save_db.query("SELECT 1"):
@@ -1024,8 +1384,6 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 		var existing_purchase_system = save_db.query_result[0].get("purchase_system_id", null)
 		var new_qty = current_qty + quantity
 		
-		# If we already have some from a different system or no system recorded, don't update purchase_system_id
-		# This preserves the ability to sell without penalty at other locations
 		if existing_purchase_system == null or existing_purchase_system != system_id:
 			var update_inventory = """
 			UPDATE player_inventory 
@@ -1037,7 +1395,6 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 				save_db.query("ROLLBACK")
 				return false
 		else:
-			# Same system - just update quantity
 			var update_inventory = """
 			UPDATE player_inventory 
 			SET quantity_tons = %f
@@ -1048,7 +1405,6 @@ func execute_purchase(item_id: int, quantity: float, total_cost: float, system_i
 				save_db.query("ROLLBACK")
 				return false
 	else:
-		# New item - record purchase location
 		var insert_inventory = """
 		INSERT INTO player_inventory (player_id, item_id, quantity_tons, purchase_system_id)
 		VALUES (1, %d, %f, %d)
@@ -1094,7 +1450,6 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float, system_id
 			save_db.query("ROLLBACK")
 			return false
 	else:
-		# Keep the item but don't change purchase_system_id
 		var update_inventory = """
 		UPDATE player_inventory 
 		SET quantity_tons = %f
@@ -1116,7 +1471,6 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float, system_id
 # HELPER FUNCTIONS
 # ============================================================================
 
-# In get_price_color() function, replace with:
 func get_price_color(price_category: String) -> Color:
 	match price_category:
 		"Very Low":

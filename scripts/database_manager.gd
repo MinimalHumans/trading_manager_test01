@@ -249,27 +249,27 @@ func get_item_count_for_category(planet_type_id: int, category_id: int) -> Dicti
 	
 	# Primary production category (they make this) - most variety
 	if produces:
-		print("  -> PRIMARY PRODUCTION: 5/3/2")
-		return {"common": 4, "rare": 3, "exotic": 2}
+		print("  -> PRIMARY PRODUCTION: 3/3/2")
+		return {"common": 3, "rare": 3, "exotic": 2}
 	
 	# High demand categories - good variety
 	if demand == "HIGH":
-		print("  -> HIGH DEMAND: 4/2/1")
-		return {"common": 3, "rare": 1, "exotic": 1}
+		print("  -> HIGH DEMAND: 2/1/1")
+		return {"common": 2, "rare": 1, "exotic": 1}
 	
 	# Medium demand - moderate variety
 	if demand == "MEDIUM":
 		print("  -> MEDIUM DEMAND: 2/1/1")
-		return {"common": 1, "rare": 1, "exotic": 0}
+		return {"common": 1, "rare": 0, "exotic": 0}
 	
 	# Low demand - minimal variety
 	if demand == "LOW":
 		print("  -> LOW DEMAND: 1/1/0")
-		return {"common": 1, "rare": 0, "exotic": 0}
+		return {"common": 0, "rare": 0, "exotic": 0}
 	
 	# Default fallback (shouldn't reach here)
 	print("  -> FALLBACK: 1/0/0")
-	return {"common": 1, "rare": 0, "exotic": 0}
+	return {"common": 0, "rare": 0, "exotic": 0}
 
 func get_items_for_system(system_id: int, planet_type_id: int, category_id: int) -> Array:
 	"""Get deterministic subset of items for a system. Same system always returns same items."""

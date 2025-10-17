@@ -308,11 +308,14 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 			CASE 
 				WHEN COALESCE(pcm.price_modifier, 0) <= -0.40 THEN 'Very Low'
 				WHEN COALESCE(pcm.price_modifier, 0) <= -0.20 THEN 'Low'
-				WHEN COALESCE(pcm.price_modifier, 0) <= 0.19 THEN 'Average'
-				WHEN COALESCE(pcm.price_modifier, 0) <= 0.49 THEN 'High'
+				WHEN COALESCE(pcm.price_modifier, 0) <= -0.05 THEN 'Below Average'
+				WHEN COALESCE(pcm.price_modifier, 0) <= 0.05 THEN 'Average'
+				WHEN COALESCE(pcm.price_modifier, 0) <= 0.20 THEN 'Above Average'
+				WHEN COALESCE(pcm.price_modifier, 0) <= 0.40 THEN 'High'
 				ELSE 'Very High'
 			END as price_category
 		FROM system_inventory si
+	
 		JOIN game_db.items i ON si.item_id = i.item_id
 		JOIN game_db.categories c ON i.category_id = c.category_id
 		JOIN game_db.rarity_tiers r ON i.rarity_id = r.rarity_id
@@ -350,14 +353,18 @@ func get_market_buy_items(system_id: int, market_type: String = "infinite", univ
 			
 			var base_price = item.get("base_price", 1.0)
 			var total_price_ratio = final_price / base_price
-			
+
 			if total_price_ratio <= 0.60:
 				item["price_category"] = "Very Low"
 			elif total_price_ratio <= 0.80:
 				item["price_category"] = "Low"
-			elif total_price_ratio <= 1.19:
+			elif total_price_ratio <= 0.95:
+				item["price_category"] = "Below Average"
+			elif total_price_ratio <= 1.05:
 				item["price_category"] = "Average"
-			elif total_price_ratio <= 1.49:
+			elif total_price_ratio <= 1.20:
+				item["price_category"] = "Above Average"
+			elif total_price_ratio <= 1.40:
 				item["price_category"] = "High"
 			else:
 				item["price_category"] = "Very High"
@@ -1109,18 +1116,23 @@ func execute_sale(item_id: int, quantity: float, total_revenue: float, system_id
 # HELPER FUNCTIONS
 # ============================================================================
 
+# In get_price_color() function, replace with:
 func get_price_color(price_category: String) -> Color:
 	match price_category:
 		"Very Low":
-			return Color(0.0, 1.0, 0.0)
+			return Color(0.0, 1.0, 0.0)  # Bright green
 		"Low":
-			return Color(0.56, 0.93, 0.56)
+			return Color(0.56, 0.93, 0.56)  # Light green
+		"Below Average":
+			return Color(0.75, 1.0, 0.75)  # Very light green
 		"Average":
-			return Color(1.0, 1.0, 1.0)
+			return Color(1.0, 1.0, 1.0)  # White
+		"Above Average":
+			return Color(1.0, 0.85, 0.5)  # Light orange
 		"High":
-			return Color(1.0, 0.65, 0.0)
+			return Color(1.0, 0.65, 0.0)  # Orange
 		"Very High":
-			return Color(1.0, 0.27, 0.0)
+			return Color(1.0, 0.27, 0.0)  # Red-orange
 		_:
 			return Color(1.0, 1.0, 1.0)
 

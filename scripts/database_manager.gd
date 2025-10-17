@@ -41,6 +41,8 @@ var items_per_category_exotic_trade_hub: int = 2
 # NEW: Demand multipliers
 var demand_multipliers: Dictionary = {}
 
+var stock_regeneration_rate: float = 0.1
+
 func _ready():
 	initialize_database()
 
@@ -85,7 +87,8 @@ func load_tunable_variables():
 		"demand_multiplier_high",
 		"demand_multiplier_medium",
 		"demand_multiplier_low",
-		"demand_multiplier_none"
+		"demand_multiplier_none",
+		"stock_regeneration_rate"
 	]
 	
 	for var_name in variables_to_load:
@@ -122,7 +125,12 @@ func load_tunable_variables():
 					demand_multipliers["LOW"] = value
 				"demand_multiplier_none":
 					demand_multipliers["NONE"] = value
+				"stock_regeneration_rate":  # ADD THIS CASE
+					stock_regeneration_rate = value
 	
+	print("Stock regeneration: %.0f%% per jump" % (stock_regeneration_rate * 100))
+
+
 	print("Loaded tunable variables: Rare x%.2f, Exotic x%.2f, Market ±%.0f%%, Connection -%d%%" % [
 		rarity_multiplier_rare, 
 		rarity_multiplier_exotic,
@@ -857,7 +865,7 @@ func has_inventory_for_system(system_id: int) -> bool:
 	
 	return false
 
-func initialize_system_inventory_lazy(system_id: int):
+func initialize_system_inventory_lazy(system_id: int, current_jump: int = 0):
 	"""Initialize inventory using deterministic item selection"""
 	if has_inventory_for_system(system_id):
 		print("System %d already has inventory" % system_id)
@@ -877,6 +885,7 @@ func initialize_system_inventory_lazy(system_id: int):
 	
 	print("\n=== INITIALIZING INVENTORY for system %d ===" % system_id)
 	print("Creating inventory for %d items" % market_items.size())
+	print("Setting last_updated_jump to %d" % current_jump)  # ADD THIS
 	
 	save_db.query("BEGIN TRANSACTION")
 	
@@ -886,7 +895,7 @@ func initialize_system_inventory_lazy(system_id: int):
 		var rarity = item.get("rarity_name", "Common")
 		
 		# Stock amounts based on rarity
-		var max_stock = 100.0  # Default
+		var max_stock = 100.0
 		match rarity:
 			"Common":
 				max_stock = 150.0
@@ -897,10 +906,11 @@ func initialize_system_inventory_lazy(system_id: int):
 		
 		var current_stock = max_stock  # Start at full stock
 		
+		# CHANGE: Initialize with current_jump instead of 0
 		var insert_query = """
 		INSERT INTO system_inventory (system_id, item_id, current_stock_tons, max_stock_tons, last_updated_jump)
-		VALUES (%d, %d, %f, %f, 0)
-		""" % [system_id, item_id, current_stock, max_stock]
+		VALUES (%d, %d, %f, %f, %d)
+		""" % [system_id, item_id, current_stock, max_stock, current_jump]
 		
 		if not save_db.query(insert_query):
 			push_error("Failed to insert inventory for item %d (%s)" % [item_id, item_name])
@@ -1006,16 +1016,18 @@ func regenerate_system_stock_turnbased(system_id: int, current_jump: int):
 	UPDATE system_inventory
 	SET 
 		current_stock_tons = MIN(
-			current_stock_tons + (max_stock_tons * 0.15 * (%d - last_updated_jump)),
+			current_stock_tons + (max_stock_tons * %f * (%d - last_updated_jump)),
 			max_stock_tons
 		),
 		last_updated_jump = %d
 	WHERE system_id = %d 
 		AND (%d - last_updated_jump) > 0
 		AND current_stock_tons < max_stock_tons
-	""" % [current_jump, current_jump, system_id, current_jump]
+	""" % [stock_regeneration_rate, current_jump, current_jump, system_id, current_jump]
 	
 	save_db.query(query)
+	
+	print("System %d: Regenerated stock (rate: %.0f%% per jump)" % [system_id, stock_regeneration_rate * 100])
 
 # ============================================================================
 # PLAYER SOLD MARKET FUNCTIONS

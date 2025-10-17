@@ -100,7 +100,7 @@ func _on_start_game(config: Dictionary):
 	var starting_system = current_player_state.get("current_system_id", 0)
 	if market_type != "infinite" and not db_manager.has_inventory_for_system(starting_system):
 		var t5 = Time.get_ticks_msec()
-		db_manager.initialize_system_inventory_lazy(starting_system)
+		db_manager.initialize_system_inventory_lazy(starting_system, 0)
 		print("Init starting inventory: %d ms" % (Time.get_ticks_msec() - t5))
 	
 	var t6 = Time.get_ticks_msec()
@@ -404,7 +404,8 @@ func _on_travel_requested(destination_id: int, distance: int):
 			
 			if not has_inventory:
 				var t3 = Time.get_ticks_msec()
-				db_manager.initialize_system_inventory_lazy(destination_id)
+				var current_jumps = current_player_state.get("total_jumps", 0)
+				db_manager.initialize_system_inventory_lazy(destination_id, current_jumps + distance)
 				print("Init inventory: %d ms" % (Time.get_ticks_msec() - t3))
 			else:
 				var t4 = Time.get_ticks_msec()

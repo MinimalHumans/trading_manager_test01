@@ -214,15 +214,21 @@ func get_trade_hub_demand_multiplier(category_name: String, universe_market: Dic
 	"""Calculate dynamic demand multiplier for Trade Hubs based on universe market"""
 	var market_value = universe_market.get(category_name, 5.0)
 	
-	# Above average market - they want to buy
-	if market_value > 5.5:
+	# Hot market - aggressive buying
+	if market_value > 6.0:
+		return 1.2
+	# Above average - good buying
+	elif market_value > 5.5:
 		return 1.0
 	# Average market
 	elif market_value >= 4.5:
 		return 0.9
-	# Below average market - they're cautious
-	else:
+	# Below average - cautious
+	elif market_value >= 4.0:
 		return 0.8
+	# Cold market - very cautious
+	else:
+		return 0.7
 
 # ============================================================================
 # NEW: DETERMINISTIC ITEM SELECTION WITH SMART COUNTS
@@ -750,7 +756,7 @@ func get_market_sell_prices(system_id: int, universe_market: Dictionary = {}, co
 		
 		# Get demand level (special case for Trade Hubs)
 		var demand_multiplier = 1.0
-		if planet_type_id == 7:  # Trade Hub
+		if planet_type_id == 11:  # Trade Hub
 			demand_multiplier = get_trade_hub_demand_multiplier(category_name, universe_market)
 		else:
 			var demand_level = get_demand_level(planet_type_id, category_id)
